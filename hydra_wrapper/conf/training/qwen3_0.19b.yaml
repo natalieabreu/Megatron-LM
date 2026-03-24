@@ -28,6 +28,12 @@ ckpt_format: torch_dist
 async_save: true
 no_save_optim: false
 
+# CBS early stopping and EWA (overridden by sweeps when used)
+target_val_loss: null
+target_val_loss_patience: 1
+ewa_decay: null
+ewa_start_iter: 0
+
 # Detailed logging
 log_params_norm: true
 log_throughput: true
