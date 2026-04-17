@@ -16,7 +16,7 @@ class OptimizerConfig:
     # General
     ##############
     optimizer: str = 'adam'
-    """Optimizer to use (one of Adam, SGD, Muon, or SpectralBall)."""
+    """Optimizer to use (one of Adam, SGD, Muon, SpectralBall, or Scion)."""
 
     lr: Optional[float] = None
     """Initial learning rate. Depending on decay style and initial warmup, the learning rate at each
@@ -33,6 +33,13 @@ class OptimizerConfig:
     """Minimum value for learning rate for the input and output layer. The scheduler clip values
        below this threshold.
     """
+
+    output_layer_lr_scale: Optional[float] = None
+    """Multiplier on lr_mult for output_layer (lm head) parameters.  Applied only to untied
+       output_layer weights (not embeddings)."""
+
+    output_layer_wd_scale: Optional[float] = None
+    """Multiplier on wd_mult for output_layer (lm head) parameters."""
 
     weight_decay: float = 0.01
     """Weight decay coefficient for L2 regularization."""
@@ -175,6 +182,25 @@ class OptimizerConfig:
     preserving expert independence and avoiding gradient interference across experts.
     """
 
+    # Scion
+    scion_momentum: float = 0.95
+    """The momentum used by the internal SGD for Scion."""
+
+    scion_fp32_matmul_prec: str = "medium"
+    """The precision to use for fp32 matmul in Scion."""
+
+    scion_coefficient_type: str = "quintic"
+    """Newton-Schulz coefficient type for Scion."""
+
+    scion_num_ns_steps: int = 5
+    """The number of Newton-Schulz iteration steps to use in Scion."""
+
+    scion_scale_mode: str = "align_adamw_rms"
+    """Scale mode for Scion optimizer. Options: 'align_adamw_rms', 'spectral_mup', 'shape_scaling'."""
+
+    scion_spectral_radius: float = 1.0
+    """The spectral radius used to scale the Scion update."""
+
     # SpectralBall
     spectral_ball_momentum: float = 0.9
     """The momentum coefficient for SpectralBall optimizer."""
@@ -291,6 +317,42 @@ class OptimizerConfig:
 
     hyperball_adam_bias_correction: bool = True
     """Whether to apply bias correction to Adam moments in HyperballAdam."""
+
+    hyperball_lm_head: bool = False
+    """Whether to optimize the untied LM head (`output_layer.weight`) with HyperballAdam."""
+
+    row_hyperball_lm_head: bool = False
+    """Whether to optimize the untied LM head (`output_layer.weight`) with row-wise HyperballAdam.
+    Mutually exclusive with hyperball_lm_head."""
+
+    hyperball_embeddings: bool = False
+    """Whether to optimize embedding weights with HyperballAdam."""
+
+    row_hyperball_embeddings: bool = False
+    """Whether to optimize embedding weights with row-wise HyperballAdam.
+    Mutually exclusive with hyperball_embeddings."""
+
+    row_hyperball_lm_head_target_row_norm: float = 1.0
+    """Target row norm for row-wise Hyperball LM head."""
+
+    row_hyperball_lm_head_target_row_norm_mode: str = "absolute"
+    """How to interpret row_hyperball_lm_head_target_row_norm.
+    Options: 'absolute', 'times_sqrt_d'."""
+
+    row_hyperball_embeddings_target_row_norm: float = 1.0
+    """Target row norm for row-wise Hyperball embeddings."""
+
+    row_hyperball_embeddings_target_row_norm_mode: str = "absolute"
+    """How to interpret row_hyperball_embeddings_target_row_norm.
+    Options: 'absolute', 'times_sqrt_d'."""
+
+    hyperball_adam_fallback_lr_scale: float = 1.0
+    """Multiplier applied to the base learning rate for the AdamW fallback params used by
+       HyperballAdam (biases, norms, embeddings, and any non-Hyperball params)."""
+
+    hyperball_adam_fallback_weight_decay: Optional[float] = None
+    """Weight decay override for the AdamW fallback params used by HyperballAdam. If None,
+       the global weight_decay is reused."""
 
     # MuonHyperball (Muon with Frobenius-norm sphere projection)
     muon_hyperball_momentum: float = 0.9

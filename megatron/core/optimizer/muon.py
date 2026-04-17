@@ -85,7 +85,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
                 f'{scale_mode} scale mode, extra_scale_factor={extra_scale_factor}',
             )
             size = [grad.size(-2), grad.size(-1)]
-            if partition_dim:
+            if partition_dim is not None:
                 size[partition_dim] *= get_pg_size(tp_group)
             orth_grad = newton_schulz_tp(
                 grad,
@@ -425,9 +425,7 @@ def get_megatron_muon_optimizer(
                     # If config not available, disable expert splitting for this param
                     param.is_grouped_moe = False
             # TODO(deyuf): might not be sufficient for future algorithm. revisit this conditioning
-            if not getattr(param, 'is_embedding_or_output_parameter', False) and not (
-                len(param.shape) == 1
-            ):
+            if not getattr(param, 'is_embedding_or_output_parameter', False) and len(param.shape) == 2:
                 linear_params.append(param)
             else:
                 nonlinear_params.append(param)
@@ -480,6 +478,7 @@ def get_megatron_muon_optimizer(
     # 2. avoid ChainedOptimizer check fail that assert all optimizers are same kind
     # side effect is muon optimizer will have wrong name str, i.e. config.optimizer == 'adam'
     # TODO(deyuf): allow user to select optimizer mix and relax ChainedOptimizer design
+    original_optimizer = config.optimizer
     config.optimizer = 'adam'
 
     # Needed for torch_dist ckpt_format, unlike torch ckpt_format
@@ -546,10 +545,14 @@ def get_megatron_muon_optimizer(
         log_single_rank(logger, logging.INFO, 'Using LayerWiseDistributedOptimizer for Muon')
         if reset_config_bf16:
             config.bf16 = True
-        return LayerWiseDistributedOptimizer(
+        optimizer = LayerWiseDistributedOptimizer(
             optimizers,
             config,
             pg_collection,
             init_state_fn_list=[muon_init_state_fn, adam_init_state_fn],
         )
-    return ChainedOptimizer(optimizers)
+    else:
+        optimizer = ChainedOptimizer(optimizers)
+
+    config.optimizer = original_optimizer
+    return optimizer

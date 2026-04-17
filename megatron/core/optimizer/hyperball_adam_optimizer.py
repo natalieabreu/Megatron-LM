@@ -19,8 +19,28 @@ from .optimizer import (
 )
 from .optimizer_config import OptimizerConfig
 from emerging_optimizers.scalar_optimizers.hyperball_adam import HyperballAdam
+from emerging_optimizers.scalar_optimizers.row_hyperball_adam import RowWiseHyperballAdam
 
 logger = logging.getLogger(__name__)
+
+
+def _is_lm_head_param(name: str, param: torch.nn.Parameter) -> bool:
+    """Return True for the untied LM head weight."""
+    return "output_layer" in name and "embedding" not in name and len(param.shape) == 2
+
+
+def _is_embedding_param(name: str, param: torch.nn.Parameter) -> bool:
+    """Return True for token embedding weights."""
+    return "word_embeddings" in name and len(param.shape) == 2
+
+
+def _resolve_row_target_norm(param: torch.nn.Parameter, value: float, mode: str) -> float:
+    """Resolve a configured row target norm."""
+    if mode == "absolute":
+        return float(value)
+    if mode == "times_sqrt_d":
+        return float(value) * (param.shape[-1] ** 0.5)
+    raise ValueError(f"Unsupported row target norm mode: {mode}")
 
 
 def get_megatron_hyperball_adam_optimizer(
@@ -35,7 +55,8 @@ def get_megatron_hyperball_adam_optimizer(
 
     This function creates a chained optimizer where:
     - Linear weights (2D tensors) use HyperballAdam with Frobenius-norm sphere constraint
-    - Non-linear parameters (biases, norms, embeddings) use standard Adam
+    - Optionally, the untied LM head also uses HyperballAdam
+    - Remaining parameters (biases, norms, embeddings) use standard Adam
 
     The update rule for 2D weights:
         W_{t+1} = R * Normalize(W_t - lr * R * Normalize(u_t))
@@ -55,6 +76,12 @@ def get_megatron_hyperball_adam_optimizer(
     # Distributed optimizer is not supported
     if config.use_distributed_optimizer:
         raise Exception('hyperball_adam with distributed optimizer is not supported.')
+    if config.hyperball_lm_head and config.row_hyperball_lm_head:
+        raise ValueError("hyperball_lm_head and row_hyperball_lm_head are mutually exclusive.")
+    if config.hyperball_embeddings and config.row_hyperball_embeddings:
+        raise ValueError(
+            "hyperball_embeddings and row_hyperball_embeddings are mutually exclusive."
+        )
 
     log_single_rank(
         logger, logging.INFO, f'Setting up HyperballAdam optimizer with config {config}'
@@ -62,6 +89,8 @@ def get_megatron_hyperball_adam_optimizer(
 
     optimizers = []
     linear_params = []
+    lm_head_params = []
+    embedding_params = []
     nonlinear_params = []
 
     # Categorize parameters into linear (2D) and non-linear (1D, embeddings)
@@ -73,18 +102,35 @@ def get_megatron_hyperball_adam_optimizer(
             # Store parameter name for logging
             param.param_name = name
 
-            # Linear weights: 2D tensors that are not embeddings or output parameters
+            is_hyperball_lm_head = config.hyperball_lm_head and _is_lm_head_param(name, param)
+            is_row_hyperball_lm_head = config.row_hyperball_lm_head and _is_lm_head_param(name, param)
+            is_hyperball_embedding = config.hyperball_embeddings and _is_embedding_param(name, param)
+            is_row_hyperball_embedding = (
+                config.row_hyperball_embeddings and _is_embedding_param(name, param)
+            )
+
+            # Linear weights: 2D tensors that are not embeddings/output params,
+            # plus the untied LM head / embeddings when explicitly requested.
             if (
-                not getattr(param, 'is_embedding_or_output_parameter', False)
-                and len(param.shape) == 2
+                (not getattr(param, 'is_embedding_or_output_parameter', False) and len(param.shape) == 2)
+                or is_hyperball_lm_head
+                or is_hyperball_embedding
             ):
                 linear_params.append(param)
+            elif is_row_hyperball_lm_head:
+                lm_head_params.append(param)
+            elif is_row_hyperball_embedding:
+                embedding_params.append(param)
             else:
                 nonlinear_params.append(param)
 
     # ==================== Setup HyperballAdam for linear params ====================
     # Freeze non-linear params temporarily
     for param in nonlinear_params:
+        param.requires_grad = False
+    for param in lm_head_params:
+        param.requires_grad = False
+    for param in embedding_params:
         param.requires_grad = False
 
     # Get param groups for linear params
@@ -129,6 +175,15 @@ def get_megatron_hyperball_adam_optimizer(
                         p.data.float(), p='fro'
                     ).item()
 
+    def row_hyperball_adam_init_state_fn(opt, config=None):
+        """Initialize RowWiseHyperballAdam optimizer state for checkpointing."""
+        for group in opt.param_groups:
+            for p in group['params']:
+                if len(opt.state[p]) == 0:
+                    opt.state[p]['exp_avg'] = torch.zeros_like(p.data)
+                    opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
+                    opt.state[p]['step'] = 0
+
     # Define init state function for Adam
     def adam_init_state_fn(opt, config=None):
         """Initialize Adam optimizer state for checkpointing."""
@@ -156,20 +211,105 @@ def get_megatron_hyperball_adam_optimizer(
 
     optimizers.append(hyperball_adam_optimizer)
 
+    def _wrap_rowwise_optimizer(params, target_row_norm):
+        for param in nonlinear_params:
+            param.requires_grad = False
+        for param in linear_params:
+            param.requires_grad = False
+        for param in lm_head_params:
+            param.requires_grad = False
+        for param in embedding_params:
+            param.requires_grad = False
+        for param in params:
+            param.requires_grad = True
+
+        no_weight_decay_cond = lambda name, param: True
+        param_groups = _get_param_groups(
+            model_chunks,
+            no_weight_decay_cond,
+            scale_lr_cond,
+            lr_mult,
+            lr=config.lr,
+            min_lr=config.min_lr,
+            decoupled_lr=config.decoupled_lr,
+            decoupled_min_lr=config.decoupled_min_lr,
+        )
+
+        optimizer = RowWiseHyperballAdam(
+            param_groups,
+            lr=config.lr,
+            betas=(config.hyperball_adam_beta1, config.hyperball_adam_beta2),
+            eps=config.hyperball_adam_eps,
+            weight_decay=0.0,
+            bias_correction=config.hyperball_adam_bias_correction,
+            target_row_norm=target_row_norm,
+        )
+
+        if config.bf16:
+            optimizer = Float16OptimizerWithFloat16Params(
+                optimizer, config, None, row_hyperball_adam_init_state_fn
+            )
+        else:
+            optimizer = FP32Optimizer(
+                optimizer, config, row_hyperball_adam_init_state_fn
+            )
+
+        optimizers.append(optimizer)
+
+    if lm_head_params:
+        _wrap_rowwise_optimizer(
+            lm_head_params,
+            _resolve_row_target_norm(
+                lm_head_params[0],
+                config.row_hyperball_lm_head_target_row_norm,
+                config.row_hyperball_lm_head_target_row_norm_mode,
+            ),
+        )
+
+    if embedding_params:
+        _wrap_rowwise_optimizer(
+            embedding_params,
+            _resolve_row_target_norm(
+                embedding_params[0],
+                config.row_hyperball_embeddings_target_row_norm,
+                config.row_hyperball_embeddings_target_row_norm_mode,
+            ),
+        )
+
     # ==================== Setup Adam for non-linear params ====================
     # Unfreeze non-linear params and freeze linear params
     for param in nonlinear_params:
         param.requires_grad = True
     for param in linear_params:
         param.requires_grad = False
+    for param in lm_head_params:
+        param.requires_grad = False
+    for param in embedding_params:
+        param.requires_grad = False
 
-    # Get Adam optimizer for non-linear params
+    # Get Adam optimizer for non-linear params, with optional fallback-specific overrides.
+    fallback_lr = config.lr * config.hyperball_adam_fallback_lr_scale
+    fallback_weight_decay = (
+        config.weight_decay
+        if config.hyperball_adam_fallback_weight_decay is None
+        else config.hyperball_adam_fallback_weight_decay
+    )
+    original_lr = config.lr
+    original_weight_decay = config.weight_decay
+    config.lr = fallback_lr
+    config.weight_decay = fallback_weight_decay
     chained_adam = get_megatron_optimizer(
         config, model_chunks, no_weight_decay_cond, scale_lr_cond, lr_mult, use_gloo_process_groups
     )
+    config.lr = original_lr
+    config.weight_decay = original_weight_decay
 
     # Unfreeze all params
     for param in linear_params:
+        param.requires_grad = True
+    for param in lm_head_params:
+        param.requires_grad = True
+    for param in embedding_params:
         param.requires_grad = True
 
     # Restore original optimizer name

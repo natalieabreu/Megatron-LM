@@ -52,6 +52,7 @@ class Scion(OrthogonalizedOptimizer):
         coefficient_type: The type of coefficient set to use for the Newton-Schulz iteration. Can be one of
             ["simple", "quintic", "polar_express"].
         num_ns_steps: The number of iteration steps to use in the Newton-Schulz iteration.
+        scale_mode: The scale factor mode for the update.
         spectral_radius: The spectral radius to use for the update, we are scaling the LMO by this spectral radius.
     """
 
@@ -64,6 +65,7 @@ class Scion(OrthogonalizedOptimizer):
         fp32_matmul_prec: str = "medium",
         coefficient_type: str = "quintic",
         num_ns_steps: int = 5,
+        scale_mode: str = "align_adamw_rms",
         spectral_radius: float = 1.0,
     ) -> None:
         if num_ns_steps < 1:
@@ -81,10 +83,11 @@ class Scion(OrthogonalizedOptimizer):
 
         def scaled_orthogonalize_fn(grad: torch.Tensor) -> torch.Tensor:
             logging.debug(
-                f"Orthogonalizing grad with {num_ns_steps} steps, {coefficient_type} coefficient, spectral_radius={spectral_radius}"
+                f"Orthogonalizing grad with {num_ns_steps} steps, {coefficient_type} coefficient, "
+                f"scale_mode={scale_mode}, spectral_radius={spectral_radius}"
             )
             orth_grad = newton_schulz(grad, steps=num_ns_steps, coefficient_type=coefficient_type, use_syrk=False)
-            width_factor = get_muon_scale_factor(grad.size(-2), grad.size(-1), mode="unit_rms_norm")
+            width_factor = get_muon_scale_factor(grad.size(-2), grad.size(-1), mode=scale_mode)
             return orth_grad * width_factor * spectral_radius
 
         super().__init__(

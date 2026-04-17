@@ -131,9 +131,17 @@ def get_muon_scale_factor(size_out: int, size_in: int, mode: str = "spectral") -
         size_out: The size of the output tensor.
         size_in: The size of the input tensor.
         mode: The mode to use for the scale.
+            Backward-compatible aliases are also accepted:
+            - "spectral" -> "spectral_mup"
+            - "unit_rms_norm" -> "align_adamw_rms"
     Returns:
         The scale factor for the update.
     """
+    if mode == "spectral":
+        mode = "spectral_mup"
+    elif mode == "unit_rms_norm":
+        mode = "align_adamw_rms"
+
     if mode == "shape_scaling":
         # Suggested by Muon (https://kellerjordan.github.io/posts/muon/)
         return max(1, size_out / size_in) ** 0.5

@@ -1191,6 +1191,13 @@ def validate_args(args, defaults={}):
         assert not args.use_megatron_fsdp, "SpectralBall optimizer does not support Megatron-FSDP for now."
         assert args.ckpt_format in ["torch", "torch_dist"], "SpectralBall optimizer supports torch and torch_dist checkpoint format."
 
+    # Scion optimizer check
+    if args.optimizer == 'scion':
+        assert not args.use_distributed_optimizer, "Scion optimizer does not support distributed optimizer for now."
+        assert not args.use_torch_fsdp2, "Scion optimizer does not support Torch-FSDP2 for now."
+        assert not args.use_megatron_fsdp, "Scion optimizer does not support Megatron-FSDP for now."
+        assert args.ckpt_format in ["torch", "torch_dist"], "Scion optimizer supports torch and torch_dist checkpoint format."
+
     # Optimizer CPU offload check
     if args.optimizer_cpu_offload:
         assert args.use_precision_aware_optimizer, (
@@ -2019,6 +2026,21 @@ def _add_regularization_args(parser):
                        dest='muon_split_moe_experts',
                        help='Disable splitting MoE experts for Muon optimizer. '
                        'When enabled (default), each expert in GroupedMLP is orthogonalized independently.')
+    group.add_argument('--scion-momentum', type=float, default=0.95,
+                       help='Momentum factor for Scion optimizer')
+    group.add_argument('--scion-fp32-matmul-prec', type=str, default='medium',
+                       choices=['low', 'medium', 'high'],
+                       help='FP32 matmul precision for Scion Newton-Schulz iteration')
+    group.add_argument('--scion-coefficient-type', type=str, default='quintic',
+                       choices=['simple', 'quintic', 'polar_express'],
+                       help='Newton-Schulz coefficient type for Scion')
+    group.add_argument('--scion-num-ns-steps', type=int, default=5,
+                       help='Number of Newton-Schulz steps for Scion optimizer')
+    group.add_argument('--scion-scale-mode', type=str, default='align_adamw_rms',
+                       choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
+                       help='Scale mode for Scion optimizer')
+    group.add_argument('--scion-spectral-radius', type=float, default=1.0,
+                       help='Spectral radius scaling factor for Scion updates')
     # MuonBall optimizer arguments (Spectral Ball with λ=0)
     group.add_argument('--muon-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for MuonBall optimizer')
@@ -2088,6 +2110,34 @@ def _add_regularization_args(parser):
                        help='Epsilon for HyperballAdam optimizer')
     group.add_argument('--hyperball-adam-bias-correction', action='store_true', default=True,
                        help='Use bias correction in HyperballAdam')
+    group.add_argument('--hyperball-lm-head', action='store_true', default=False,
+                       help='Optimize the untied LM head (`output_layer.weight`) with HyperballAdam. '
+                            'When using muon_hyperball, this keeps other eligible matrices on MuonHyperball '
+                            'and routes only the LM head to HyperballAdam.')
+    group.add_argument('--row-hyperball-lm-head', action='store_true', default=False,
+                       help='Optimize the untied LM head (`output_layer.weight`) with row-wise HyperballAdam. '
+                            'Mutually exclusive with --hyperball-lm-head.')
+    group.add_argument('--hyperball-embeddings', action='store_true', default=False,
+                       help='Optimize embedding weights with HyperballAdam.')
+    group.add_argument('--row-hyperball-embeddings', action='store_true', default=False,
+                       help='Optimize embedding weights with row-wise HyperballAdam. '
+                            'Mutually exclusive with --hyperball-embeddings.')
+    group.add_argument('--row-hyperball-lm-head-target-row-norm', type=float, default=1.0,
+                       help='Target row norm for row-wise Hyperball LM head.')
+    group.add_argument('--row-hyperball-lm-head-target-row-norm-mode', type=str, default='absolute',
+                       choices=['absolute', 'times_sqrt_d'],
+                       help='Interpretation of --row-hyperball-lm-head-target-row-norm.')
+    group.add_argument('--row-hyperball-embeddings-target-row-norm', type=float, default=1.0,
+                       help='Target row norm for row-wise Hyperball embeddings.')
+    group.add_argument('--row-hyperball-embeddings-target-row-norm-mode', type=str, default='absolute',
+                       choices=['absolute', 'times_sqrt_d'],
+                       help='Interpretation of --row-hyperball-embeddings-target-row-norm.')
+    group.add_argument('--hyperball-adam-fallback-lr-scale', type=float, default=1.0,
+                       help='Scale factor applied to the base learning rate for AdamW fallback '
+                            'parameters when using HyperballAdam.')
+    group.add_argument('--hyperball-adam-fallback-weight-decay', type=float, default=None,
+                       help='Weight decay override for AdamW fallback parameters when using '
+                            'HyperballAdam. Defaults to --weight-decay when unset.')
     group.add_argument('--spectral-ball-momentum', type=float, default=0.9,
                        help='Momentum coefficient for SpectralBall optimizer')
     group.add_argument('--spectral-ball-use-nesterov', action='store_true', default=True,
@@ -2394,11 +2444,23 @@ def _add_training_args(parser):
                        help='Number of consecutive eval intervals the '
                        'validation loss must be at or below --target-val-loss '
                        'before stopping. Default: 1 (stop immediately).')
-    group.add_argument('--ewa-decay', type=float, default=None,
-                       help='EWA (Exponential Weight Averaging) decay rate tau. '
-                       'Maintains shadow params: xi = tau*xi + (1-tau)*theta. '
-                       'Evaluation uses xi instead of theta. '
-                       'Set to e.g. 0.999 or 0.9999 to enable.')
+    group.add_argument(
+        '--ewa-decay',
+        type=float,
+        nargs='+',
+        default=None,
+        help='EWA coefficient(s). Can pass multiple values for parallel shadow tracks. '
+        'If --ewa-time-scaled is set: alpha_t = min(1, beta*t) with t the 1-based step count '
+        'since --ewa-start-iter, and xi <- (1-alpha)*xi + alpha*theta. '
+        'Otherwise (default): each value is the decay tau in xi <- tau*xi + (1-tau)*theta. '
+        'Example: --ewa-decay 0.999  (one track) or --ewa-decay 0.02 0.04 0.06',
+    )
+    group.add_argument(
+        '--ewa-time-scaled',
+        action='store_true',
+        default=False,
+        help='Use time-scaled EWA: alpha_t = min(1, beta*t) per beta (see --ewa-decay).',
+    )
     group.add_argument('--ewa-start-iter', type=int, default=0,
                        help='Iteration at which to start EWA updates. '
                        'Before this, shadow params track live params exactly.')
@@ -2445,7 +2507,7 @@ def _add_training_args(parser):
                        help='Enable bias only in the QKV linear layers',
                        dest='add_qkv_bias')
     group.add_argument('--optimizer', type=str, default='adam',
-                       choices=['adam', 'sgd', 'muon', 'dist_muon', 'muon_ball', 'muon_ball_dist', 'muon_hyperball', 'hyperball_adam', 'spectral_ball', 'spectral_ball_dist'],
+                       choices=['adam', 'sgd', 'muon', 'dist_muon', 'muon_ball', 'muon_ball_dist', 'muon_hyperball', 'hyperball_adam', 'spectral_ball', 'spectral_ball_dist', 'scion'],
                        help='Optimizer function')
     group.add_argument('--optimizer-cpu-offload', action='store_true',
                        help='Offload optimizer state to CPU')
@@ -3041,6 +3103,9 @@ def _add_validation_args(parser):
 
     group.add_argument('--full-validation', action='store_true', help='If set, each time validation occurs it uses the full validation dataset(s). This currently only works for GPT datasets!')
     group.add_argument('--multiple-validation-sets', action='store_true', help='If set, multiple datasets listed in the validation split are evaluated independently with a separate loss for each dataset in the list. This argument requires that no weights are included in the list')
+    group.add_argument('--eval-global-batch-size', type=int, default=None,
+                       help='Global batch size to use for validation/test. '
+                       'If unset, reuse --global-batch-size.')
     group.add_argument('--eval-iters', type=int, default=100,
                        help='Number of iterations to run for evaluation'
                        'validation/test for.')

@@ -26,6 +26,8 @@ import time
 # The earliest we can measure the start time.
 _TRAIN_START_TIME = time.time()
 _EWA_STATE = None  # Set by train() when --ewa-decay is active
+_VALID_DATALOADERS = None   # Stashed for fresh_valid_iterator; kept off args to avoid deepcopy in checkpointing.
+_VALID_DATALOADERS_VP = None
 import torch
 
 try:
@@ -58,7 +60,7 @@ from megatron.core.fp8_utils import correct_amax_history_if_needed
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.checkpointing import checkpoint_exists
-from megatron.training.ewa import EWAState, save_ewa_checkpoint, load_ewa_checkpoint
+from megatron.training.ewa import EWAState, ewa_beta_tag, save_ewa_checkpoint, load_ewa_checkpoint
 from megatron.core.full_cuda_graph import FullCudaGraphWrapper
 from megatron.core.transformer.cuda_graphs import TECudaGraphHelper
 from megatron.core.transformer.module import Float16Module
@@ -80,6 +82,7 @@ from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
 from megatron.core.optimizer.muon import get_megatron_muon_optimizer
 from megatron.core.optimizer.muon_ball_optimizer import get_megatron_muon_ball_optimizer
 from megatron.core.optimizer.spectral_ball_optimizer import get_megatron_spectral_ball_optimizer
+from megatron.core.optimizer.scion_optimizer import get_megatron_scion_optimizer
 from megatron.core.optimizer.hyperball_adam_optimizer import get_megatron_hyperball_adam_optimizer
 from megatron.core.optimizer.muon_hyperball_optimizer import get_megatron_muon_hyperball_optimizer
 from megatron.core.rerun_state_machine import (
@@ -798,6 +801,10 @@ def pretrain(
             train_data_iterator.append(iterators[0])
             valid_data_iterator.append(iterators[1])
             test_data_iterator.append(iterators[2])
+            global _VALID_DATALOADERS_VP
+            if _VALID_DATALOADERS_VP is None:
+                _VALID_DATALOADERS_VP = []
+            _VALID_DATALOADERS_VP.append(_VALID_DATALOADERS)
     else:
         train_data_iterator, valid_data_iterator, test_data_iterator = (
             build_train_valid_test_data_iterators(train_valid_test_dataset_provider)
@@ -878,15 +885,21 @@ def pretrain(
 
     if args.do_valid:
         prefix = f'iteration {iteration} on validation set'
+        val_iter = fresh_valid_iterator(valid_data_iterator)
+        if val_iter is None:
+            raise RuntimeError(
+                'Final validation: could not rebuild validation iterator. '
+                'Ensure validation dataloaders were built (_VALID_DATALOADERS).'
+            )
         if getattr(args, 'perform_rl_step', False):
             rl_utils.evaluate_and_print_results_rl(
-                valid_data_iterator, model, optimizer,
+                val_iter, model, optimizer,
                 iteration, write_to_tensorboard=not args.skip_train
             )
         else:
             evaluate_and_print_results(
                 prefix, forward_step_func,
-                valid_data_iterator, model,
+                val_iter, model,
                 iteration, process_non_loss_data_func, config,
                 verbose=True, write_to_tensorboard=not args.skip_train,
                 non_loss_data_func=non_loss_data_func
@@ -1255,6 +1268,15 @@ def setup_model_and_optimizer(
             lr_mult,
             use_gloo_process_groups=args.enable_gloo_process_groups,
             layer_wise_distributed_optimizer='dist' in config.optimizer,
+        )
+    elif 'scion' in config.optimizer:
+        optimizer = get_megatron_scion_optimizer(
+            config,
+            model,
+            no_wd_decay_cond,
+            scale_lr_cond,
+            lr_mult,
+            use_gloo_process_groups=args.enable_gloo_process_groups,
         )
     else:
         optimizer = get_megatron_optimizer(
@@ -2356,7 +2378,12 @@ def train(
     global _EWA_STATE
     ewa_state = None
     if args.ewa_decay is not None:
-        ewa_state = EWAState(model, decay=args.ewa_decay, start_iter=args.ewa_start_iter)
+        ewa_state = EWAState(
+            model,
+            betas=args.ewa_decay,
+            start_iter=args.ewa_start_iter,
+            time_scaled=getattr(args, 'ewa_time_scaled', False),
+        )
         if args.load is not None:
             load_ewa_checkpoint(ewa_state, args.load)
     _EWA_STATE = ewa_state
@@ -2781,25 +2808,61 @@ def train(
                 gc.collect()
             prefix = f'iteration {iteration}'
             timers('eval-time', log_level=0).start(barrier=True)
-            # If EWA is active, swap in shadow weights for evaluation.
-            _ewa_ctx = ewa_state.swap_for_eval(model) if ewa_state is not None else None
-            if _ewa_ctx is not None:
-                _ewa_ctx.__enter__()
-            try:
-                if getattr(args, 'perform_rl_step', False):
-                    rl_utils.evaluate_and_print_results_rl(valid_data_iterator, model, optimizer,
-                                           iteration, write_to_tensorboard=True)
-                    val_loss_result = None
-                else:
-                    val_loss_result = evaluate_and_print_results(
-                        prefix, forward_step_func,
-                        valid_data_iterator, model,
-                        iteration, process_non_loss_data_func,
-                        config, verbose=False, write_to_tensorboard=True,
-                        non_loss_data_func=non_loss_data_func)
-            finally:
-                if _ewa_ctx is not None:
-                    _ewa_ctx.__exit__(None, None, None)
+            # Validation: baseline (training weights), then one eval per EWA track (if any).
+            # Fresh iterator each time so validation always starts at the beginning of the val set.
+            if getattr(args, 'perform_rl_step', False):
+                rl_valid_it = fresh_valid_iterator(valid_data_iterator)
+                if rl_valid_it is None:
+                    raise RuntimeError(
+                        'Validation: could not rebuild validation iterator. '
+                        'Ensure validation dataloaders were built (_VALID_DATALOADERS).'
+                    )
+                rl_utils.evaluate_and_print_results_rl(rl_valid_it, model, optimizer,
+                                       iteration, write_to_tensorboard=True)
+                val_loss_result = None
+            else:
+                val_iter = fresh_valid_iterator(valid_data_iterator)
+                if val_iter is None:
+                    raise RuntimeError(
+                        'Validation: could not rebuild validation iterator. '
+                        'Ensure validation dataloaders were built (_VALID_DATALOADERS).'
+                    )
+                val_loss_result = evaluate_and_print_results(
+                    prefix, forward_step_func,
+                    val_iter, model,
+                    iteration, process_non_loss_data_func,
+                    config, verbose=False, write_to_tensorboard=True,
+                    non_loss_data_func=non_loss_data_func)
+                if ewa_state is not None:
+                    for i, beta in enumerate(ewa_state.betas):
+                        tag = ewa_beta_tag(beta)
+                        wkey = f'val_loss_ewa_{tag}'
+                        ewa_valid_it = fresh_valid_iterator(valid_data_iterator)
+                        if ewa_valid_it is None:
+                            raise RuntimeError(
+                                'EWA validation: could not rebuild validation iterator. '
+                                'Ensure validation dataloaders were built (_VALID_DATALOADERS).'
+                            )
+                        with ewa_state.swap_for_eval(model, i):
+                            ewa_loss = evaluate_and_print_results(
+                                prefix,
+                                forward_step_func,
+                                ewa_valid_it,
+                                model,
+                                iteration,
+                                process_non_loss_data_func,
+                                config,
+                                verbose=False,
+                                write_to_tensorboard=True,
+                                non_loss_data_func=non_loss_data_func,
+                                wandb_lm_loss_key=wkey,
+                                eval_label_suffix=f' EWA[β={beta}]',
+                            )
+                        # Any EWA track beating target counts toward early stopping.
+                        if ewa_loss is not None and (
+                            val_loss_result is None or ewa_loss < val_loss_result
+                        ):
+                            val_loss_result = ewa_loss
 
             eval_duration += timers('eval-time').elapsed()
             eval_iterations += sum(args.eval_iters) if isinstance(args.eval_iters, list) else args.eval_iters
@@ -2954,9 +3017,34 @@ def evaluate(
 
     total_loss_dict = {}
 
-    # make validation batch size independent from training batch size
-    eval_batch_size = args.global_batch_size
-    eval_num_microbatches = eval_batch_size // (args.micro_batch_size * args.data_parallel_size)
+    # Validation can optionally use its own global batch size.
+    eval_batch_size = args.eval_global_batch_size or args.global_batch_size
+    eval_micro_batch_size = args.micro_batch_size
+    eval_data_parallel_size = args.data_parallel_size
+    eval_microbatch_denominator = eval_micro_batch_size * eval_data_parallel_size
+    print_rank_0(
+        "Validation batch config: "
+        f"eval_global_batch_size={eval_batch_size}, "
+        f"train_micro_batch_size={eval_micro_batch_size}, "
+        f"data_parallel_size={eval_data_parallel_size}, "
+        f"microbatch_denominator={eval_microbatch_denominator}"
+    )
+    assert eval_batch_size >= eval_microbatch_denominator, (
+        "Validation global batch size must be at least "
+        "micro_batch_size * data_parallel_size. "
+        f"Got eval_global_batch_size={eval_batch_size}, "
+        f"micro_batch_size={eval_micro_batch_size}, "
+        f"data_parallel_size={eval_data_parallel_size}."
+    )
+    assert eval_batch_size % eval_microbatch_denominator == 0, (
+        "Validation global batch size must be divisible by "
+        "micro_batch_size * data_parallel_size. "
+        f"Got eval_global_batch_size={eval_batch_size}, "
+        f"micro_batch_size={eval_micro_batch_size}, "
+        f"data_parallel_size={eval_data_parallel_size}."
+    )
+    eval_num_microbatches = eval_batch_size // eval_microbatch_denominator
+    print_rank_0(f"Validation eval_num_microbatches={eval_num_microbatches}")
     forward_backward_func = get_forward_backward_func()
     if args.cuda_graph_impl == "local" and "full_iteration" in args.cuda_graph_scope:
         forward_backward_func = FullCudaGraphWrapper(forward_backward_func, cuda_graph_warmup_steps=args.cuda_graph_warmup_steps)
@@ -3090,6 +3178,8 @@ def evaluate_and_print_results(
     verbose=False,
     write_to_tensorboard=True,
     non_loss_data_func=None,
+    wandb_lm_loss_key=None,
+    eval_label_suffix='',
 ):
     """Helper function to evaluate and dump results on screen.
 
@@ -3152,28 +3242,32 @@ def evaluate_and_print_results(
         # Timelimit hit during evaluation
         if timelimit:
             return None
-        string = f' validation{suffix} loss at {prefix} | '
+        string = f' validation{suffix}{eval_label_suffix} loss at {prefix} | '
         for key in total_loss_dict:
             string += '{} value: {:.6E} | '.format(key, total_loss_dict[key].item())
             ppl = math.exp(min(20, total_loss_dict[key].item()))
             string += '{} PPL: {:.6E} | '.format(key, ppl)
+            if key == 'lm loss' and wandb_lm_loss_key is not None:
+                tb_base = wandb_lm_loss_key
+            else:
+                tb_base = '{} validation{}'.format(key, suffix)
             if writer:
-                writer.add_scalar('{} validation{}'.format(key, suffix), total_loss_dict[key].item(), iteration)
+                writer.add_scalar(tb_base, total_loss_dict[key].item(), iteration)
                 writer.add_scalar(
-                    '{} validation{} vs samples'.format(key, suffix),
+                    tb_base + ' vs samples',
                     total_loss_dict[key].item(),
                     args.consumed_train_samples,
                 )
                 if args.log_validation_ppl_to_tensorboard:
-                    writer.add_scalar('{} validation{} ppl'.format(key, suffix), ppl, iteration)
+                    writer.add_scalar(tb_base + ' ppl', ppl, iteration)
                     writer.add_scalar(
-                        '{} validation{} ppl vs samples'.format(key, suffix), ppl, args.consumed_train_samples
+                        tb_base + ' ppl vs samples', ppl, args.consumed_train_samples
                     )
-                if wandb_writer and is_last_rank():
-                    _wandb_log({'{} validation{}'.format(key, suffix): total_loss_dict[key].item()})
+            if wandb_writer and is_last_rank():
+                _wandb_log({tb_base: total_loss_dict[key].item()})
 
-            # Capture the primary validation loss (first dataset, 'lm loss' key)
-            if index == 0 and key == 'lm loss':
+            # Capture the primary validation loss (first dataset, 'lm loss' key); skip EWA-only evals
+            if index == 0 and key == 'lm loss' and wandb_lm_loss_key is None:
                 val_loss = total_loss_dict[key].item()
 
         if process_non_loss_data_func is not None and writer and is_last_rank():
@@ -3191,6 +3285,56 @@ def cyclic_iter(iter):
     while True:
         for x in iter:
             yield x
+
+
+def _iterator_from_dataloader(dataloader_type, dataloader):
+    """Match ``build_train_valid_test_data_iterators`` inner ``_get_iterator`` (one dataloader)."""
+    if dataloader_type == "single":
+        return RerunDataIterator(iter(dataloader))
+    elif dataloader_type == "cyclic":
+        return RerunDataIterator(iter(cyclic_iter(dataloader)))
+    elif dataloader_type == "external":
+        if isinstance(dataloader, list):
+            return [RerunDataIterator(d) for d in dataloader]
+        else:
+            return RerunDataIterator(dataloader)
+    else:
+        raise RuntimeError("unexpected dataloader type")
+
+
+def fresh_valid_iterator(valid_data_iterator):
+    """New iterator(s) over validation data from the start of the validation set.
+
+    Use at the beginning of each eval (baseline, EWA, etc.) so validation does not
+    walk a single finite iterator across training steps. With ``dataloader_type=single``,
+    reusing the same iterator without resetting eventually exhausts the loader.
+    """
+    args = get_args()
+
+    def _from_valid_dataloaders(valid_dataloaders):
+        if valid_dataloaders is None:
+            return None
+        dl_type = args.dataloader_type
+        if args.multiple_validation_sets:
+            if valid_dataloaders[0] is None:
+                return [None] * len(valid_dataloaders)
+            valid_dl_type = "cyclic" if args.full_validation else dl_type
+            return [
+                _iterator_from_dataloader(valid_dl_type, dl) for dl in valid_dataloaders
+            ]
+        if valid_dataloaders[0] is not None:
+            return _iterator_from_dataloader(dl_type, valid_dataloaders[0])
+        return None
+
+    if isinstance(valid_data_iterator, list):
+        if _VALID_DATALOADERS_VP is None or len(_VALID_DATALOADERS_VP) != len(valid_data_iterator):
+            raise RuntimeError(
+                "Validation: cannot rebuild iterators for virtual pipeline "
+                f"(expected _VALID_DATALOADERS_VP of length {len(valid_data_iterator)})."
+            )
+        return [_from_valid_dataloaders(stage_dls) for stage_dls in _VALID_DATALOADERS_VP]
+
+    return _from_valid_dataloaders(_VALID_DATALOADERS)
 
 
 def get_train_valid_test_num_samples():
@@ -3369,6 +3513,11 @@ def build_train_valid_test_data_iterators(build_train_valid_test_datasets_provid
         test_data_iterator = _get_iterator(dl_type, test_dataloader)
     else:
         test_data_iterator = None
+
+    # Stash for fresh_valid_iterator (reset validation at each eval).
+    # Stored as module globals, NOT on args, to avoid deepcopy failures during checkpointing.
+    global _VALID_DATALOADERS
+    _VALID_DATALOADERS = valid_dataloaders
 
     return train_data_iterator, valid_data_iterators, test_data_iterator
 

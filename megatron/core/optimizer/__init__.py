@@ -95,6 +95,8 @@ def _get_param_groups(
     decoupled_lr: Optional[float],
     decoupled_min_lr: Optional[float],
     default_skip_embedding_weight_decay: bool = False,
+    output_layer_lr_scale: Optional[float] = None,
+    output_layer_wd_scale: Optional[float] = None,
 ) -> List[Dict]:
     """Create parameter groups for optimizer.
 
@@ -118,6 +120,10 @@ def _get_param_groups(
         decoupled_min_lr (Optional[float]): optional decoupled minimum learning rate.
         default_skip_embedding_weight_decay (bool): whether to skip weight decay for embedding
             parameters by default, if no_weight_decay_cond is not provided.
+        output_layer_lr_scale (Optional[float]): multiplier on lr_mult for output_layer
+            (lm head) parameters.  Only affects untied output_layer weights.
+        output_layer_wd_scale (Optional[float]): multiplier on wd_mult for output_layer
+            (lm head) parameters.
 
     Returns:
         List of parameter groups.
@@ -160,6 +166,17 @@ def _get_param_groups(
                 wd_mult, _lr_mult = 0.0, 1.0
             else:
                 wd_mult, _lr_mult = 0.0, lr_mult
+
+            # Apply per-parameter-type scaling for output_layer (lm head).
+            # We identify output_layer by name (not the is_embedding_or_output_parameter
+            # attr, which also covers embeddings).  Only fires for untied output_layer
+            # weights — when embeddings are tied, there is no separate output_layer param.
+            is_output_layer = "output_layer" in name and "embedding" not in name
+            if is_output_layer:
+                if output_layer_lr_scale is not None:
+                    _lr_mult *= output_layer_lr_scale
+                if output_layer_wd_scale is not None:
+                    wd_mult *= output_layer_wd_scale
 
             is_decoupled_lr = False
             # For input/embedding and output layer: embedding.word_embeddings.weight /
@@ -296,6 +313,8 @@ def _get_param_groups_and_buffers(
         decoupled_lr=config.decoupled_lr,
         decoupled_min_lr=config.decoupled_min_lr,
         default_skip_embedding_weight_decay=default_skip_embedding_weight_decay,
+        output_layer_lr_scale=config.output_layer_lr_scale,
+        output_layer_wd_scale=config.output_layer_wd_scale,
     )
     param_groups = list(filter(filter_fn, param_groups))
     buffers = {}

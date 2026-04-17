@@ -136,9 +136,11 @@ def newton_schulz(
     if steps % len(coefficient_sets) != 0:
         raise ValueError(f"steps ({steps}) must be multiple of len(coefficient_sets) ({len(coefficient_sets)}).")
 
-    # ns_step_fn = newton_schulz_step
-    # Perform the NS iterations
-    ns_step_fn = newton_schulz_step_tsyrk
+    # Fall back to the standard matmul-based Newton-Schulz step when the Triton
+    # tensor-descriptor API is unavailable in the local environment.
+    ns_step_fn = newton_schulz_step
+    if triton_kernels.HAS_TRITON_340:  # type: ignore[attr-defined]
+        ns_step_fn = newton_schulz_step_tsyrk
     X = X.to(torch.bfloat16)
     # if torch.get_float32_matmul_precision() == "medium":
     #     # PyTorch doesn't really have FP32 I/O BF16 compute kernels for precision "medium"
@@ -229,34 +231,34 @@ def newton_schulz_tp(
     return output
 
 
-# def newton_schulz_step(
-#     X: torch.Tensor, a: float, b: float, c: float, tp_group: torch.distributed.ProcessGroup | None = None
-# ) -> torch.Tensor:
-#     """Perform a single Newton-Schulz iteration step.
-# 
-#     This function performs a single Newton-Schulz iteration step. It supports distributed input that's sharded
-#     along the smaller (orthogonalize) dimension.
-# 
-#     Warning:
-#         If distributed, this function doesn't have the information to verify that X is sharded along the smaller
-#         (orthogonalize) dimension. It is user's responsibility to ensure that X is sharded correctly.
-# 
-#     Arguments:
-#         X: The tensor to be orthogonalized.
-#         a: The a coefficient.
-#         b: The b coefficient.
-#         c: The c coefficient.
-#         tp_group: The process group to use for the all-reduce.
-# 
-#     Returns:
-#         The orthogonalization of X.
-#     """
-#     A = X @ X.mT
-#     if tp_group is not None:
-#         torch.distributed.all_reduce(A, op=torch.distributed.ReduceOp.SUM, group=tp_group)
-#     B = torch.addmm(A, A, A, alpha=c, beta=b)
-#     X = torch.addmm(X, B, X, alpha=1.0, beta=a)
-#     return X
+def newton_schulz_step(
+    X: torch.Tensor, a: float, b: float, c: float, tp_group: torch.distributed.ProcessGroup | None = None
+) -> torch.Tensor:
+    """Perform a single Newton-Schulz iteration step.
+
+    This function performs a single Newton-Schulz iteration step. It supports distributed input that's sharded
+    along the smaller (orthogonalize) dimension.
+
+    Warning:
+        If distributed, this function doesn't have the information to verify that X is sharded along the smaller
+        (orthogonalize) dimension. It is user's responsibility to ensure that X is sharded correctly.
+
+    Arguments:
+        X: The tensor to be orthogonalized.
+        a: The a coefficient.
+        b: The b coefficient.
+        c: The c coefficient.
+        tp_group: The process group to use for the all-reduce.
+
+    Returns:
+        The orthogonalization of X.
+    """
+    A = X @ X.mT
+    if tp_group is not None:
+        torch.distributed.all_reduce(A, op=torch.distributed.ReduceOp.SUM, group=tp_group)
+    B = torch.addmm(A, A, A, alpha=c, beta=b)
+    X = torch.addmm(X, B, X, alpha=1.0, beta=a)
+    return X
 
 
 def newton_schulz_step_tsyrk(

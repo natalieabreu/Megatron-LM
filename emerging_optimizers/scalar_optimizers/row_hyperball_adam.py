@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Row-wise Hyperball Adam optimizer.
+
+This optimizer is intended for matrices whose rows should stay on the unit sphere,
+for example untied LM-head or embedding weights with shape [vocab, hidden].
+
+For each row w_i:
+    1. Normalize the row to unit norm at initialization.
+    2. Compute the standard Adam update u_i.
+    3. Normalize the update row-wise: d_i = u_i / ||u_i||_2.
+    4. Take a tangent step: w_i <- w_i - lr * d_i.
+    5. Retract back to the unit sphere: w_i <- w_i / ||w_i||_2.
+"""
+
+from typing import Tuple
+
+import torch
+from torch.optim import Optimizer
+
+from emerging_optimizers.scalar_optimizers.adam import calculate_adam_update
+
+
+__all__ = ["RowWiseHyperballAdam"]
+
+
+def _normalize_rows_(
+    tensor: torch.Tensor, target_row_norm: float = 1.0, eps: float = 1e-12
+) -> None:
+    """Normalize each row in-place to the target norm."""
+    if tensor.ndim != 2:
+        raise ValueError(f"RowWiseHyperballAdam expects 2D tensors, got shape {tuple(tensor.shape)}")
+    row_norms = torch.norm(tensor.float(), p=2, dim=-1, keepdim=True).clamp_min(eps)
+    tensor.mul_(target_row_norm)
+    tensor.div_(row_norms.to(dtype=tensor.dtype))
+
+
+class RowWiseHyperballAdam(Optimizer):
+    """Adam with row-wise unit-sphere projection."""
+
+    def __init__(
+        self,
+        params,
+        lr: float = 1e-3,
+        betas: Tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        bias_correction: bool = True,
+        target_row_norm: float = 1.0,
+    ):
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if eps < 0.0:
+            raise ValueError(f"Invalid epsilon value: {eps}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
+        if target_row_norm <= 0.0:
+            raise ValueError(f"Invalid target row norm: {target_row_norm}")
+
+        defaults = dict(
+            lr=lr,
+            betas=betas,
+            eps=eps,
+            weight_decay=weight_decay,
+            bias_correction=bias_correction,
+            target_row_norm=target_row_norm,
+        )
+        super().__init__(params, defaults)
+
+        with torch.no_grad():
+            for group in self.param_groups:
+                for p in group["params"]:
+                    _normalize_rows_(p.data, target_row_norm=group["target_row_norm"])
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group["lr"]
+            betas = group["betas"]
+            eps = group["eps"]
+            weight_decay = group["weight_decay"]
+            bias_correction = group["bias_correction"]
+            target_row_norm = group["target_row_norm"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+
+                grad = p.grad
+                if p.ndim != 2:
+                    raise ValueError(
+                        f"RowWiseHyperballAdam only supports 2D tensors, got shape {tuple(p.shape)}"
+                    )
+
+                state = self.state[p]
+                if len(state) == 0:
+                    state["step"] = 0
+                    state["exp_avg"] = torch.zeros_like(p.data)
+                    state["exp_avg_sq"] = torch.zeros_like(p.data)
+                    _normalize_rows_(p.data, target_row_norm=target_row_norm)
+
+                state["step"] += 1
+                step = state["step"]
+                exp_avg = state["exp_avg"]
+                exp_avg_sq = state["exp_avg_sq"]
+
+                if weight_decay != 0.0:
+                    p.data.mul_(1.0 - lr * weight_decay)
+                    _normalize_rows_(p.data, target_row_norm=target_row_norm)
+
+                u_t = calculate_adam_update(
+                    grad=grad,
+                    exp_avg=exp_avg,
+                    exp_avg_sq=exp_avg_sq,
+                    betas=betas,
+                    correct_bias=bias_correction,
+                    use_nesterov=False,
+                    step=step,
+                    eps=eps,
+                )
+
+                row_update_norms = torch.norm(u_t.float(), p=2, dim=-1, keepdim=True).clamp_min(1e-12)
+                d_t = u_t / row_update_norms.to(dtype=u_t.dtype)
+
+                p.data.add_(d_t, alpha=-lr)
+                _normalize_rows_(p.data, target_row_norm=target_row_norm)
+
+        return loss
