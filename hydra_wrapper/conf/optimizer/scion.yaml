@@ -1,0 +1,32 @@
+# Scion Optimizer Configuration
+# Orthogonalized optimizer for 2D weights, Adam fallback for non-2D params
+optimizer: scion
+
+# Learning rate
+lr: 3.0e-4
+min_lr: 0.0
+decoupled_lr: null
+decoupled_min_lr: null
+output_layer_lr_scale: null
+output_layer_wd_scale: null
+lr_warmup_iters: 500
+lr_decay_style: cosine
+lr_decay_iters: null
+
+# Adam parameters (for non-Scion params: bias, layernorm, embeddings, output layer)
+adam_beta1: 0.9
+adam_beta2: 0.95
+adam_eps: 1.0e-8
+
+# Regularization
+clip_grad: 1.0
+weight_decay: 0.0
+use_distributed_optimizer: false
+
+# Scion specific parameters
+scion_momentum: 0.95
+scion_fp32_matmul_prec: medium
+scion_coefficient_type: quintic
+scion_num_ns_steps: 5
+scion_scale_mode: spectral_mup
+scion_spectral_radius: 1.0

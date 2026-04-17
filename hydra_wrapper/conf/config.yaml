@@ -25,6 +25,18 @@ wandb:
   entity: null
   name: ${experiment_name}
 
+# nGPT weight normalization (disabled by default)
+ngpt:
+  weight_norm: false
+  weight_norm_forward: false
+  weight_norm_eps: 1.0e-8
+  weight_norm_targets:
+    - embeddings
+    - attn
+    - mlp
+    - lm_head
+  weight_norm_log_interval: 0
+
 # Hydra configuration
 hydra:
   run:

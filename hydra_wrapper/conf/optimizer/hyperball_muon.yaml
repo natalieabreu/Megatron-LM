@@ -6,11 +6,17 @@ optimizer: muon_hyperball
 # Learning rate
 lr: 5.0e-3
 min_lr: 5.0e-4
+decoupled_lr: null
+decoupled_min_lr: null
+output_layer_lr_scale: null
+output_layer_wd_scale: null
 lr_warmup_iters: 500
 lr_decay_style: cosine
+lr_decay_iters: null
 
 # Adam parameters (for non-hyperball params: bias, layernorm, embeddings)
 adam_beta1: 0.9
+beta2: 0.95
 adam_beta2: 0.95
 adam_eps: 1.0e-8
 
@@ -20,8 +26,25 @@ weight_decay: 0.0  # Hyperball constrains weights on sphere, no WD needed
 
 # MuonHyperball specific parameters
 muon_hyperball_momentum: 0.9
+muon_hyperball_split_qkv: true
 muon_hyperball_use_nesterov: true
+muon_hyperball_split_fc1: true
+muon_hyperball_split_moe_experts: true
 muon_hyperball_msign_steps: 5
 muon_hyperball_radius_mode: initialize    # R = ||W_0||_F (matches paper)
 muon_hyperball_scale_mode: align_adamw_rms
 muon_hyperball_qkv_split_mode: head
+
+# Optional HyperballAdam parameters for the untied LM head when hyperball_lm_head=true
+hyperball_adam_beta1: 0.9
+hyperball_adam_beta2: 0.999
+hyperball_adam_eps: 1.0e-8
+hyperball_adam_bias_correction: true
+hyperball_lm_head: false
+row_hyperball_lm_head: false
+hyperball_embeddings: false
+row_hyperball_embeddings: false
+row_hyperball_lm_head_target_row_norm: 1.0
+row_hyperball_lm_head_target_row_norm_mode: absolute
+row_hyperball_embeddings_target_row_norm: 1.0
+row_hyperball_embeddings_target_row_norm_mode: absolute

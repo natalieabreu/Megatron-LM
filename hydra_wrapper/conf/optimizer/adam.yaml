@@ -3,6 +3,10 @@ name: adam
 lr: 5.0e-3
 min_lr: 5.0e-4
 weight_decay: 0.1
+decoupled_lr: null
+decoupled_min_lr: null
+output_layer_lr_scale: null
+output_layer_wd_scale: null
 
 # LR schedule
 lr_warmup_iters: 500

@@ -5,12 +5,18 @@ optimizer: hyperball_adam
 
 # Learning rate
 lr: 1.0e-3
-min_lr: 1.0e-4
+min_lr: 0.0
+decoupled_lr: null
+decoupled_min_lr: null
+output_layer_lr_scale: null
+output_layer_wd_scale: null
 lr_warmup_iters: 500
 lr_decay_style: cosine
+lr_decay_iters: null
 
 # Adam parameters (for non-hyperball params: bias, layernorm, embeddings)
 adam_beta1: 0.9
+beta2: 0.95
 adam_beta2: 0.95
 adam_eps: 1.0e-8
 
@@ -23,3 +29,13 @@ hyperball_adam_beta1: 0.9
 hyperball_adam_beta2: 0.999
 hyperball_adam_eps: 1.0e-8
 hyperball_adam_bias_correction: true
+hyperball_lm_head: false
+row_hyperball_lm_head: false
+hyperball_embeddings: false
+row_hyperball_embeddings: false
+row_hyperball_lm_head_target_row_norm: 1.0
+row_hyperball_lm_head_target_row_norm_mode: absolute
+row_hyperball_embeddings_target_row_norm: 1.0
+row_hyperball_embeddings_target_row_norm_mode: absolute
+hyperball_adam_fallback_lr_scale: 1.0
+hyperball_adam_fallback_weight_decay: null

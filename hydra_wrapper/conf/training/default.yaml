@@ -18,9 +18,18 @@ no_masked_softmax_fusion: true
 
 # Logging intervals
 log_interval: 10
+hidden_state_log_interval: 100
 save_interval: 1000
 eval_interval: 500
 eval_iters: 10
+eval_global_batch_size: null
+
+# Optional early stopping + EWA defaults
+target_val_loss: null
+target_val_loss_patience: 1
+ewa_decay: null
+ewa_time_scaled: false
+ewa_start_iter: 0
 
 # Detailed logging (set to true/list to enable)
 log_per_module_update_rms: false

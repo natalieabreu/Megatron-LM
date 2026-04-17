@@ -1,20 +1,18 @@
-# Qwen3 ~150M Model Configuration
-# 18 layers, hidden=768, ffn=2048 (SwiGLU), 12 heads, GQA 4 groups
-# Non-embedding params: 113.3M
-# Total params (V=100352, tied embeddings): 190.3M
-# Total params (V=50277,  untied embeddings): 113.2M + 77.3M = 190.5M
-num_layers: 18
-hidden_size: 768
-ffn_hidden_size: 2048
-num_attention_heads: 12
-kv_channels: 64
-seq_length: 1024
-max_position_embeddings: 1024
-vocab_size: 50277
+# Qwen3 ~0.6B Model Configuration
+# Architecture: 28 layers, hidden=1024, ffn=3072, 16 heads, GQA 8 groups
+# Param count: ~0.65B (28 × [QKV + O + FFN + norms] + 2×vocab×1024)
+num_layers: 28
+hidden_size: 1024
+ffn_hidden_size: 3072
+num_attention_heads: 16
+kv_channels: 128
+seq_length: 4096
+max_position_embeddings: 40960
+vocab_size: 100352
 
 # Group Query Attention (GQA)
 group_query_attention: true
-num_query_groups: 4
+num_query_groups: 8
 
 # Normalization
 normalization: RMSNorm
@@ -37,11 +35,8 @@ untie_embeddings_and_output_weights: true
 disable_bias_linear: true
 qk_layernorm: true
 
-# Initialization
-spectral_mup_init: true
-use_cpu_initialization: true
-init_method_std: 0.02
-split_qkv_init_mode: head
+# Initialization — LeCun init: std = 1/sqrt(d_in) for 2D weights
+lecun_init: true
 
 # Transformer implementation
 transformer_impl: transformer_engine

@@ -1,5 +1,5 @@
-# Single node configuration (4 GPUs)
-gpus_per_node: 4
+# Single node 8-GPU topology matching shell launch defaults
+gpus_per_node: 8
 num_nodes: 1
 tensor_model_parallel_size: 1
 pipeline_model_parallel_size: 1

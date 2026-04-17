@@ -10,8 +10,11 @@ train_iters: 50000
 # Logging intervals
 log_interval: 10
 save_interval: 500
+# Keep only the latest checkpoint for these short CBS runs.
+save_retain_interval: 1000000000
 eval_interval: 50
 eval_iters: 25
+eval_global_batch_size: null
 hidden_state_log_interval: 10000
 
 # Regularization
@@ -32,6 +35,7 @@ no_save_optim: false
 target_val_loss: null
 target_val_loss_patience: 1
 ewa_decay: null
+ewa_time_scaled: false
 ewa_start_iter: 0
 
 # Detailed logging

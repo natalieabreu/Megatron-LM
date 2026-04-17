@@ -2,8 +2,11 @@
 """
 Sweep launcher for Megatron-LM Hydra wrapper.
 
-Automatically detects sweep parameters from config.yaml - any parameter 
+Automatically detects sweep parameters from config.yaml - any parameter
 that is a list will be swept over. Single values are used as-is.
+Some list parameters (e.g. training.ewa_decay for multi-track EWA) are
+passed through as a single list, not expanded into separate runs; see
+NATIVE_LIST_PARAMS.
 
 Environment variables:
     SWEEP_CONFIG: Path to config YAML (default: conf/config.yaml)
@@ -33,6 +36,9 @@ NATIVE_LIST_PARAMS = {
     'training.log_hidden_states',
     'training.log_params',
     'training.benchmark_tasks',
+    # Multi-beta EWA in one run: pass all coefficients to Megatron, do not grid-sweep
+    'ewa_decay',
+    'training.ewa_decay',
 }
 
 

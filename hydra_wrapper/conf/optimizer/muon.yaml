@@ -1,0 +1,35 @@
+# Muon Optimizer Configuration
+# msign orthogonalization for 2D weights, Adam for non-2D params
+optimizer: muon
+
+# Learning rate
+lr: 0.02
+min_lr: 0.0
+decoupled_lr: null
+decoupled_min_lr: null
+output_layer_lr_scale: null
+output_layer_wd_scale: null
+lr_warmup_iters: 500
+lr_decay_style: cosine
+lr_decay_iters: null
+
+# Adam parameters (for non-muon params: bias, layernorm, embeddings)
+adam_beta1: 0.9
+adam_beta2: 0.95
+adam_eps: 1.0e-8
+
+# Regularization
+clip_grad: 1.0
+weight_decay: 0.0
+
+# Muon specific parameters
+muon_momentum: 0.95
+muon_split_qkv: true
+muon_qkv_split_mode: component
+muon_split_fc1: true
+muon_use_nesterov: false
+muon_scale_mode: align_adamw_rms
+muon_num_ns_steps: 5
+muon_tp_mode: blockwise
+muon_extra_scale_factor: 1.0
+muon_split_moe_experts: true

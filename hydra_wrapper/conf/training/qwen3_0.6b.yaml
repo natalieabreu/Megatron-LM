@@ -1,20 +1,19 @@
-# Qwen3 1.8B Training Configuration
+# Qwen3 0.6B Training Configuration
 
 # Batch sizes
 micro_batch_size: 8
-global_batch_size: 1024
+global_batch_size: 256
 
-# Training iterations (60B tokens / 1024 batch / 4096 seq_len ≈ 23842)
-train_iters: 14306
+# Params ≈ 0.646B
+# Training iterations (12.9B tokens / 256 batch / 4096 seq_len ≈ 12324)
+train_iters: 12324
 
 # Logging intervals
 log_interval: 10
-save_interval: 100
+save_interval: 10
 eval_interval: 100
 eval_iters: 25
 benchmark_interval: 2000
-hidden_state_log_interval: 100
-
 
 # Regularization
 clip_grad: 1.0
@@ -27,7 +26,7 @@ no_masked_softmax_fusion: true
 
 # Checkpointing
 ckpt_format: torch_dist
-no_save_optim: true
+no_save_optim: false
 async_save: true
 
 # Detailed logging
@@ -78,4 +77,3 @@ benchmark_tasks:
   - hellaswag_rc_5shot
   - arc_challenge_rc_5shot
 benchmark_sequence_length: 4096
-

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 
 def build_megatron_args(cfg: DictConfig) -> List[str]:
@@ -152,11 +152,11 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
         args.append(f"--lr-decay-iters={optimizer.lr_decay_iters}")
 
     # Adam parameters (used by many optimizers)
-    if optimizer.get("adam_beta1"):
+    if optimizer.get("adam_beta1") is not None:
         args.append(f"--adam-beta1={optimizer.adam_beta1}")
-    if optimizer.get("adam_beta2"):
+    if optimizer.get("adam_beta2") is not None:
         args.append(f"--adam-beta2={optimizer.adam_beta2}")
-    if optimizer.get("adam_eps"):
+    if optimizer.get("adam_eps") is not None:
         args.append(f"--adam-eps={optimizer.adam_eps}")
     if optimizer.get("use_distributed_optimizer", False):
         args.append("--use-distributed-optimizer")
@@ -171,46 +171,89 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
 
     # Spectral Ball / Spectral Ball Dist specific
     if "spectral_ball" in opt_name:
-        if optimizer.get("spectral_ball_momentum"):
+        if optimizer.get("spectral_ball_momentum") is not None:
             args.append(f"--spectral-ball-momentum={optimizer.spectral_ball_momentum}")
         if optimizer.get("spectral_ball_use_nesterov", False):
             args.append("--spectral-ball-use-nesterov")
-        if optimizer.get("spectral_ball_msign_steps"):
+        if optimizer.get("spectral_ball_split_qkv") is False:
+            args.append("--spectral-ball-no-split-qkv")
+        if optimizer.get("spectral_ball_qkv_split_mode"):
+            args.append(f"--spectral-ball-qkv-split-mode={optimizer.spectral_ball_qkv_split_mode}")
+        if optimizer.get("spectral_ball_split_fc1") is False:
+            args.append("--spectral-ball-no-split-fc1")
+        if optimizer.get("spectral_ball_split_moe_experts") is False:
+            args.append("--spectral-ball-no-split-moe-experts")
+        if optimizer.get("spectral_ball_msign_steps") is not None:
             args.append(f"--spectral-ball-msign-steps={optimizer.spectral_ball_msign_steps}")
-        if optimizer.get("spectral_ball_power_iteration_steps"):
+        if optimizer.get("spectral_ball_power_iteration_steps") is not None:
             args.append(f"--spectral-ball-power-iteration-steps={optimizer.spectral_ball_power_iteration_steps}")
         if optimizer.get("spectral_ball_radius_mode"):
             args.append(f"--spectral-ball-radius-mode={optimizer.spectral_ball_radius_mode}")
+        if optimizer.get("spectral_ball_radius_scaler") is not None:
+            args.append(f"--spectral-ball-radius-scaler={optimizer.spectral_ball_radius_scaler}")
         if optimizer.get("spectral_ball_scale_mode"):
             args.append(f"--spectral-ball-scale-mode={optimizer.spectral_ball_scale_mode}")
         if optimizer.get("spectral_ball_solver"):
             args.append(f"--spectral-ball-solver={optimizer.spectral_ball_solver}")
-        if optimizer.get("spectral_ball_solver_tolerance_f"):
+        if optimizer.get("spectral_ball_solver_tolerance_f") is not None:
             args.append(f"--spectral-ball-solver-tolerance-f={optimizer.spectral_ball_solver_tolerance_f}")
-        if optimizer.get("spectral_ball_solver_max_iterations"):
+        if optimizer.get("spectral_ball_solver_max_iterations") is not None:
             args.append(f"--spectral-ball-solver-max-iterations={optimizer.spectral_ball_solver_max_iterations}")
         if optimizer.get("spectral_ball_retract_mode"):
             args.append(f"--spectral-ball-retract-mode={optimizer.spectral_ball_retract_mode}")
-        if optimizer.get("spectral_ball_qkv_split_mode"):
-            args.append(f"--spectral-ball-qkv-split-mode={optimizer.spectral_ball_qkv_split_mode}")
+        if optimizer.get("spectral_ball_retract_alpha") is not None:
+            args.append(f"--spectral-ball-retract-alpha={optimizer.spectral_ball_retract_alpha}")
 
     # Muon (standalone) specific
     if opt_name == "muon":
         if optimizer.get("muon_momentum"):
             args.append(f"--muon-momentum={optimizer.muon_momentum}")
+        if optimizer.get("muon_split_qkv") is False:
+            args.append("--muon-no-split-qkv")
+        if optimizer.get("muon_qkv_split_mode"):
+            args.append(f"--muon-qkv-split-mode={optimizer.muon_qkv_split_mode}")
+        if optimizer.get("muon_split_fc1") is False:
+            args.append("--muon-no-split-fc1")
         if optimizer.get("muon_use_nesterov", False):
             args.append("--muon-use-nesterov")
         if optimizer.get("muon_scale_mode"):
             args.append(f"--muon-scale-mode={optimizer.muon_scale_mode}")
         if optimizer.get("muon_num_ns_steps"):
             args.append(f"--muon-num-ns-steps={optimizer.muon_num_ns_steps}")
+        if optimizer.get("muon_tp_mode"):
+            args.append(f"--muon-tp-mode={optimizer.muon_tp_mode}")
+        if optimizer.get("muon_extra_scale_factor") is not None:
+            args.append(f"--muon-extra-scale-factor={optimizer.muon_extra_scale_factor}")
+        if optimizer.get("muon_split_moe_experts") is False:
+            args.append("--muon-no-split-moe-experts")
+
+    # Scion specific
+    if opt_name == "scion":
+        if optimizer.get("scion_momentum") is not None:
+            args.append(f"--scion-momentum={optimizer.scion_momentum}")
+        if optimizer.get("scion_fp32_matmul_prec"):
+            args.append(f"--scion-fp32-matmul-prec={optimizer.scion_fp32_matmul_prec}")
+        if optimizer.get("scion_coefficient_type"):
+            args.append(f"--scion-coefficient-type={optimizer.scion_coefficient_type}")
+        if optimizer.get("scion_num_ns_steps") is not None:
+            args.append(f"--scion-num-ns-steps={optimizer.scion_num_ns_steps}")
+        if optimizer.get("scion_scale_mode"):
+            args.append(f"--scion-scale-mode={optimizer.scion_scale_mode}")
+        if optimizer.get("scion_spectral_radius") is not None:
+            args.append(f"--scion-spectral-radius={optimizer.scion_spectral_radius}")
 
     # MuonHyperball specific
     if "muon_hyperball" in opt_name:
         if optimizer.get("muon_hyperball_momentum"):
             args.append(f"--muon-hyperball-momentum={optimizer.muon_hyperball_momentum}")
+        if optimizer.get("muon_hyperball_split_qkv") is False:
+            args.append("--muon-hyperball-no-split-qkv")
         if optimizer.get("muon_hyperball_use_nesterov", False):
             args.append("--muon-hyperball-use-nesterov")
+        if optimizer.get("muon_hyperball_split_fc1") is False:
+            args.append("--muon-hyperball-no-split-fc1")
+        if optimizer.get("muon_hyperball_split_moe_experts") is False:
+            args.append("--muon-hyperball-no-split-moe-experts")
         if optimizer.get("muon_hyperball_msign_steps"):
             args.append(f"--muon-hyperball-msign-steps={optimizer.muon_hyperball_msign_steps}")
         if optimizer.get("muon_hyperball_radius_mode"):
@@ -221,7 +264,14 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
             args.append(f"--muon-hyperball-qkv-split-mode={optimizer.muon_hyperball_qkv_split_mode}")
 
     # HyperballAdam specific
-    if "hyperball_adam" in opt_name:
+    # muon_hyperball can also route the untied LM head through HyperballAdam.
+    if "hyperball_adam" in opt_name or "muon_hyperball" in opt_name:
+        if optimizer.get("hyperball_lm_head", False) and optimizer.get("row_hyperball_lm_head", False):
+            raise ValueError("optimizer.hyperball_lm_head and optimizer.row_hyperball_lm_head are mutually exclusive.")
+        if optimizer.get("hyperball_embeddings", False) and optimizer.get("row_hyperball_embeddings", False):
+            raise ValueError(
+                "optimizer.hyperball_embeddings and optimizer.row_hyperball_embeddings are mutually exclusive."
+            )
         if optimizer.get("hyperball_adam_beta1"):
             args.append(f"--hyperball-adam-beta1={optimizer.hyperball_adam_beta1}")
         if optimizer.get("hyperball_adam_beta2"):
@@ -230,6 +280,43 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
             args.append(f"--hyperball-adam-eps={optimizer.hyperball_adam_eps}")
         if optimizer.get("hyperball_adam_bias_correction", True):
             args.append("--hyperball-adam-bias-correction")
+        if optimizer.get("hyperball_lm_head", False):
+            args.append("--hyperball-lm-head")
+        if optimizer.get("row_hyperball_lm_head", False):
+            args.append("--row-hyperball-lm-head")
+        if optimizer.get("hyperball_embeddings", False):
+            args.append("--hyperball-embeddings")
+        if optimizer.get("row_hyperball_embeddings", False):
+            args.append("--row-hyperball-embeddings")
+        if optimizer.get("row_hyperball_lm_head_target_row_norm") is not None:
+            args.append(
+                "--row-hyperball-lm-head-target-row-norm="
+                f"{optimizer.row_hyperball_lm_head_target_row_norm}"
+            )
+        if optimizer.get("row_hyperball_lm_head_target_row_norm_mode"):
+            args.append(
+                "--row-hyperball-lm-head-target-row-norm-mode="
+                f"{optimizer.row_hyperball_lm_head_target_row_norm_mode}"
+            )
+        if optimizer.get("row_hyperball_embeddings_target_row_norm") is not None:
+            args.append(
+                "--row-hyperball-embeddings-target-row-norm="
+                f"{optimizer.row_hyperball_embeddings_target_row_norm}"
+            )
+        if optimizer.get("row_hyperball_embeddings_target_row_norm_mode"):
+            args.append(
+                "--row-hyperball-embeddings-target-row-norm-mode="
+                f"{optimizer.row_hyperball_embeddings_target_row_norm_mode}"
+            )
+        if optimizer.get("hyperball_adam_fallback_lr_scale") is not None:
+            args.append(
+                f"--hyperball-adam-fallback-lr-scale={optimizer.hyperball_adam_fallback_lr_scale}"
+            )
+        if optimizer.get("hyperball_adam_fallback_weight_decay") is not None:
+            args.append(
+                "--hyperball-adam-fallback-weight-decay="
+                f"{optimizer.hyperball_adam_fallback_weight_decay}"
+            )
 
     # ==================== Data Arguments ====================
     data = cfg.data
@@ -304,6 +391,8 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
         f"--eval-interval={training.get('eval_interval', 500)}",
         f"--eval-iters={training.get('eval_iters', 10)}",
     ])
+    if training.get("eval_global_batch_size") is not None:
+        args.append(f"--eval-global-batch-size={training.eval_global_batch_size}")
 
     # Early stopping on target validation loss
     if training.get("target_val_loss") is not None:
@@ -313,7 +402,14 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
 
     # Exponential Weight Averaging (EWA)
     if training.get("ewa_decay") is not None:
-        args.append(f"--ewa-decay={training.ewa_decay}")
+        ed = training.ewa_decay
+        # OmegaConf uses ListConfig for YAML lists; isinstance(..., list) is False.
+        if isinstance(ed, (list, tuple, ListConfig)):
+            args.extend(["--ewa-decay"] + [str(x) for x in ed])
+        else:
+            args.extend(["--ewa-decay", str(ed)])
+    if training.get("ewa_time_scaled"):
+        args.append("--ewa-time-scaled")
     if training.get("ewa_start_iter"):
         args.append(f"--ewa-start-iter={training.ewa_start_iter}")
 

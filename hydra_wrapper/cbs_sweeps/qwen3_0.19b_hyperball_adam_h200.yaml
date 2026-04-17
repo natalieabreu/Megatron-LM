@@ -1,0 +1,58 @@
+# CBS experiment: Qwen3 0.19B — HyperballAdam + Constant LR + EWA
+# Sweeps over global_batch_size; stops at target validation loss.
+# Use with: SWEEP_CONFIG=sweeps/cbs_sweeps/qwen3_0.19b_hyperball_adam.yaml
+
+# Override defaults
+model: qwen3_0.19b
+training: qwen3_0.19b
+optimizer: hyperball_adam
+data: olmo60b_neox
+distributed: single_gpu
+
+# Constant LR (total steps unknown a priori)
+optimizer.lr: [6.32e-2, 1e-1]
+optimizer.min_lr: 0.0
+optimizer.lr_warmup_iters: [1000]
+optimizer.lr_decay_style: cosine
+optimizer.lr_decay_iters: 3633
+optimizer.adam_beta1: 0.9
+optimizer.beta2: [0.95]
+optimizer.adam_beta2: ${optimizer.beta2}
+optimizer.hyperball_adam_beta1: 0.9
+optimizer.hyperball_adam_beta2: ${optimizer.beta2}
+optimizer.adam_eps: 1.0e-8
+optimizer.weight_decay: 0.1
+optimizer.hyperball_lm_head: true
+
+model.untie_embeddings_and_output_weights: true
+model.spectral_mup_init: true
+# model.lecun_init: true
+model.init_method_std: 0.02
+
+# Sweep over batch sizes (powers of 2)
+training.global_batch_size: [1024]
+training.micro_batch_size: 64
+training.eval_global_batch_size: 256  
+# Target validation loss early stopping
+# training.target_val_loss: 3.2
+# training.target_val_loss_patience: 3
+
+# EWA: evaluate on exponential moving average of weights
+# training.ewa_decay: 0.999
+# training.ewa_start_iter: 0
+
+# Safety cap
+training.train_iters: 3633
+training.eval_interval: 500
+training.save_interval: 500
+
+# W&B settings
+wandb.enabled: true
+wandb.project: megatron-cbs-1
+wandb.name: cbs_hyperball_adam_0.19B_slurm${oc.env:SLURM_JOB_ID,local}
+
+# Checkpointing
+training.no_save_optim: false
+
+# Paths
+paths.output_dir: /n/netscratch/kempner_barak_lab/Lab/nabreu/results/cbs/qwen3_0.19B_hyperball

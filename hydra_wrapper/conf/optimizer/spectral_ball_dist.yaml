@@ -4,8 +4,13 @@ optimizer: spectral_ball_dist
 # Learning rate
 lr: 5.0e-3
 min_lr: 5.0e-4
+decoupled_lr: null
+decoupled_min_lr: null
+output_layer_lr_scale: null
+output_layer_wd_scale: null
 lr_warmup_iters: 500
 lr_decay_style: cosine
+lr_decay_iters: 14306
 
 # Adam parameters (for non-spectral params)
 adam_beta1: 0.9
