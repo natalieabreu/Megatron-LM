@@ -95,10 +95,49 @@ def make_sharded_optimizer_tensor(
     if isinstance(model_param, ShardedTensorFactory):
         return replace(model_param, key=f'{prefix}.{model_param.key}', data=optim_param)
 
-    assert tuple(optim_param.shape) == model_param.local_shape, (
-        f'Optimizer shape ({tuple(optim_param.shape)} does not match model shape '
-        f'({model_param.local_shape})'
-    )
+    if tuple(optim_param.shape) != model_param.local_shape:
+        assert len(optim_param.shape) == len(model_param.local_shape) and all(
+            optim_dim == model_dim or optim_dim == 1
+            for optim_dim, model_dim in zip(optim_param.shape, model_param.local_shape)
+        ), (
+            f'Optimizer shape ({tuple(optim_param.shape)} does not match model shape '
+            f'({model_param.local_shape})'
+        )
+
+        local_shape = tuple(optim_param.shape)
+        global_shape = list(model_param.global_shape)
+        global_offset = list(model_param.global_offset)
+        axis_fragmentations = (
+            None
+            if model_param.axis_fragmentations is None
+            else list(model_param.axis_fragmentations)
+        )
+
+        for dim, (optim_dim, model_dim) in enumerate(zip(local_shape, model_param.local_shape)):
+            if optim_dim == model_dim:
+                continue
+
+            sharded_dim = dim + model_param.prepend_axis_num
+            global_shape[sharded_dim] = 1
+            global_offset[sharded_dim] = 0
+            if axis_fragmentations is not None:
+                axis_fragmentations[sharded_dim] = 1
+
+        sh_ten = replace(
+            model_param,
+            key=f'{prefix}.{model_param.key}',
+            data=optim_param,
+            dtype=optim_param.dtype,
+            local_shape=local_shape,
+            global_shape=tuple(global_shape),
+            global_offset=tuple(global_offset),
+            axis_fragmentations=(
+                None if axis_fragmentations is None else tuple(axis_fragmentations)
+            ),
+        )
+        sh_ten.validate_metadata_integrity()
+        return sh_ten
+
     sh_ten = replace(
         model_param, key=f'{prefix}.{model_param.key}', data=optim_param, dtype=optim_param.dtype
     )

@@ -9,7 +9,7 @@ ffn_hidden_size: 2048
 num_attention_heads: 12
 kv_channels: 64
 seq_length: 1024
-max_position_embeddings: 1024
+max_position_embeddings: ${model.seq_length}
 vocab_size: 50277
 
 # Group Query Attention (GQA)

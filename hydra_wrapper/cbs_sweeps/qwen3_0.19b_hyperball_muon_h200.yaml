@@ -21,11 +21,16 @@ optimizer.muon_hyperball_scale_mode: spectral_mup
 optimizer.muon_hyperball_msign_steps: 8
 optimizer.muon_hyperball_radius_mode: initialize
 
-optimizer.hyperball_lm_head: true
-optimizer.hyperball_embeddings: true
+optimizer.hyperball_lm_head: false
+optimizer.hyperball_embeddings: false
 
-optimizer.row_hyperball_lm_head: false
-optimizer.row_hyperball_embeddings: false
+optimizer.row_hyperball_lm_head: true
+optimizer.row_hyperball_embeddings: true
+
+optimizer.row_hyperball_lm_head_target_row_norm: 1.0
+optimizer.row_hyperball_lm_head_target_row_norm_mode: absolute
+optimizer.row_hyperball_embeddings_target_row_norm: 0.01
+optimizer.row_hyperball_embeddings_target_row_norm_mode: times_sqrt_d
 
 optimizer.hyperball_adam_beta1: 0.9
 optimizer.beta2: [0.95]

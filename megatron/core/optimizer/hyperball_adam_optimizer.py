@@ -183,6 +183,9 @@ def get_megatron_hyperball_adam_optimizer(
                     opt.state[p]['exp_avg'] = torch.zeros_like(p.data)
                     opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
                     opt.state[p]['step'] = 0
+                    opt.state[p]['fixed_row_norms'] = torch.norm(
+                        p.data.float(), p=2, dim=-1, keepdim=True
+                    ).to(dtype=p.data.dtype)
 
     # Define init state function for Adam
     def adam_init_state_fn(opt, config=None):

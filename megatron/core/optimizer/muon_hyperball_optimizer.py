@@ -283,6 +283,9 @@ def get_megatron_muon_hyperball_optimizer(
                     opt.state[p]['exp_avg'] = torch.zeros_like(p.data)
                     opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
                     opt.state[p]['step'] = 0
+                    opt.state[p]['fixed_row_norms'] = torch.norm(
+                        p.data.float(), p=2, dim=-1, keepdim=True
+                    ).to(dtype=p.data.dtype)
 
     def _wrap_special_hyperball_optimizer(params, use_rowwise, target_row_norm=None):
         for param in nonlinear_params:
