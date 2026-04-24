@@ -19,7 +19,7 @@ from .optimizer import (
 )
 from .optimizer_config import OptimizerConfig
 from emerging_optimizers.scalar_optimizers.hyperball_adam import HyperballAdam
-from emerging_optimizers.scalar_optimizers.row_hyperball_adam import RowWiseHyperballAdam
+from emerging_optimizers.scalar_optimizers.row_hyperball_adam import RowWiseHyperballAdam, _normalize_rows_
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,22 @@ def _resolve_row_target_norm(param: torch.nn.Parameter, value: float, mode: str)
     if mode == "times_sqrt_d":
         return float(value) * (param.shape[-1] ** 0.5)
     raise ValueError(f"Unsupported row target norm mode: {mode}")
+
+
+def _install_post_load_renormalize(wrapper, target_row_norm: float):
+    """Wrap load_state_dict so fp32 master params are re-normalized after checkpoint load."""
+    original_load = wrapper.load_state_dict
+
+    def _load_and_renormalize(state_dict):
+        original_load(state_dict)
+        groups = getattr(wrapper, 'fp32_from_float16_groups',
+                         getattr(wrapper, 'fp32_from_fp32_groups', []))
+        for group in groups:
+            for p in group:
+                if p.ndim == 2:
+                    _normalize_rows_(p.data, target_row_norm=target_row_norm)
+
+    wrapper.load_state_dict = _load_and_renormalize
 
 
 def get_megatron_hyperball_adam_optimizer(
@@ -183,9 +199,6 @@ def get_megatron_hyperball_adam_optimizer(
                     opt.state[p]['exp_avg'] = torch.zeros_like(p.data)
                     opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
                     opt.state[p]['step'] = 0
-                    opt.state[p]['fixed_row_norms'] = torch.norm(
-                        p.data.float(), p=2, dim=-1, keepdim=True
-                    ).to(dtype=p.data.dtype)
 
     # Define init state function for Adam
     def adam_init_state_fn(opt, config=None):
@@ -257,6 +270,7 @@ def get_megatron_hyperball_adam_optimizer(
                 optimizer, config, row_hyperball_adam_init_state_fn
             )
 
+        _install_post_load_renormalize(optimizer, target_row_norm)
         optimizers.append(optimizer)
 
     if lm_head_params:

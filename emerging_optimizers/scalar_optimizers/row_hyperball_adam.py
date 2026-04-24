@@ -18,13 +18,14 @@
 This optimizer is intended for matrices whose rows should stay on a fixed-radius
 sphere, for example untied LM-head or embedding weights with shape [vocab, hidden].
 
-For each row w_i:
-    1. Normalize the row to the configured target norm at initialization.
-    2. Capture that initialized row norm r_i as the fixed row radius.
-    3. Compute the standard Adam update u_i.
-    4. Normalize the update row-wise: d_i = u_i / ||u_i||_2.
-    5. Take a tangent step: w_i <- w_i - lr * r_i * d_i.
-    6. Retract back to the row sphere: w_i <- r_i * w_i / ||w_i||_2.
+Initialization normalizes each row to the configured target_row_norm.
+
+Each step is stateless with respect to radii -- it measures the current row norms
+r_i = ||w_i||_2, then:
+    1. Compute the standard Adam update u_i.
+    2. Normalize the update row-wise: d_i = u_i / ||u_i||_2.
+    3. Take a tangent step: w_i <- w_i - lr * r_i * d_i.
+    4. Retract back to the measured radius: w_i <- r_i * w_i / ||w_i||_2.
 """
 
 from typing import Tuple
@@ -57,14 +58,19 @@ def _row_norms(
     return row_norms.to(dtype=tensor.dtype if dtype is None else dtype)
 
 
-def _retract_rows_(tensor: torch.Tensor, fixed_row_norms: torch.Tensor) -> None:
-    """Project each row in-place onto its stored fixed-radius sphere."""
-    tensor.mul_(fixed_row_norms)
-    tensor.div_(_row_norms(tensor, dtype=tensor.dtype))
+def _retract_rows_(tensor: torch.Tensor, row_norms: torch.Tensor) -> None:
+    """Project each row in-place back onto its measured-radius sphere."""
+    current = _row_norms(tensor, dtype=tensor.dtype)
+    tensor.mul_(row_norms / current)
 
 
 class RowWiseHyperballAdam(Optimizer):
-    """Adam with row-wise fixed-radius sphere projection."""
+    """Adam with row-wise sphere projection.
+
+    At init, rows are normalized to ``target_row_norm``.  Each step measures
+    the current row norms, uses them to scale the update direction, and
+    retracts back to those same radii.
+    """
 
     def __init__(
         self,
@@ -115,7 +121,6 @@ class RowWiseHyperballAdam(Optimizer):
             eps = group["eps"]
             weight_decay = group["weight_decay"]
             bias_correction = group["bias_correction"]
-            target_row_norm = group["target_row_norm"]
 
             for p in group["params"]:
                 if p.grad is None:
@@ -132,18 +137,14 @@ class RowWiseHyperballAdam(Optimizer):
                     state["step"] = 0
                     state["exp_avg"] = torch.zeros_like(p.data)
                     state["exp_avg_sq"] = torch.zeros_like(p.data)
-                    _normalize_rows_(p.data, target_row_norm=target_row_norm)
-                    state["fixed_row_norms"] = _row_norms(p.data)
+
+                # Measure current row radii -- this is the radius we preserve.
+                row_radii = _row_norms(p.data)
 
                 state["step"] += 1
-                step = state["step"]
+                step_count = state["step"]
                 exp_avg = state["exp_avg"]
                 exp_avg_sq = state["exp_avg_sq"]
-                fixed_row_norms = state["fixed_row_norms"]
-
-                if weight_decay != 0.0:
-                    p.data.mul_(1.0 - lr * weight_decay)
-                    _retract_rows_(p.data, fixed_row_norms)
 
                 u_t = calculate_adam_update(
                     grad=grad,
@@ -152,14 +153,14 @@ class RowWiseHyperballAdam(Optimizer):
                     betas=betas,
                     correct_bias=bias_correction,
                     use_nesterov=False,
-                    step=step,
+                    step=step_count,
                     eps=eps,
                 )
 
                 row_update_norms = _row_norms(u_t, dtype=u_t.dtype)
                 d_t = u_t / row_update_norms
 
-                p.data.add_(fixed_row_norms * d_t, alpha=-lr)
-                _retract_rows_(p.data, fixed_row_norms)
+                p.data.add_(row_radii * d_t, alpha=-lr)
+                _retract_rows_(p.data, row_radii)
 
         return loss
