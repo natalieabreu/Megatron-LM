@@ -33,3 +33,4 @@ muon_num_ns_steps: 5
 muon_tp_mode: blockwise
 muon_extra_scale_factor: 1.0
 muon_split_moe_experts: true
+muon_ns_init: false

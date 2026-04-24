@@ -34,6 +34,7 @@ muon_hyperball_msign_steps: 5
 muon_hyperball_radius_mode: initialize    # R = ||W_0||_F (matches paper)
 muon_hyperball_scale_mode: align_adamw_rms
 muon_hyperball_qkv_split_mode: head
+muon_hyperball_ns_init: false
 
 # Optional HyperballAdam parameters for the untied LM head when hyperball_lm_head=true
 hyperball_adam_beta1: 0.9

@@ -1944,7 +1944,7 @@ def _add_logging_args(parser):
                        ' For MoE layers, use "moe::router", "moe::shared_experts", "moe::routed_experts".')
     group.add_argument('--log-params', nargs='+', type=str, default=[],
                        choices=['attention::linear_qkv', 'attention::o_proj', 'mlp::linear_fc1', 'mlp::linear_fc2',
-                                'input_layernorm', 'pre_mlp_layernorm', 'embedding', 'lm_head'],
+                                'input_layernorm', 'pre_mlp_layernorm', 'embedding', 'lm_head', 'all'],
                        help='Enable mean, std, and rms logging of parameters in each transformer layer.'
                        ' Use "::" syntax to specify submodules, e.g., "attention::linear_qkv" for attention QKV weights.')
     return parser
@@ -2026,6 +2026,9 @@ def _add_regularization_args(parser):
                        dest='muon_split_moe_experts',
                        help='Disable splitting MoE experts for Muon optimizer. '
                        'When enabled (default), each expert in GroupedMLP is orthogonalized independently.')
+    group.add_argument('--muon-ns-init', action='store_true', default=False,
+                       help='Apply Newton-Schulz initialization to Muon parameters: '
+                       'orthogonalize the randomly initialized weights and scale by sqrt(dout/din).')
     group.add_argument('--scion-momentum', type=float, default=0.95,
                        help='Momentum factor for Scion optimizer')
     group.add_argument('--scion-fp32-matmul-prec', type=str, default='medium',
@@ -2101,6 +2104,9 @@ def _add_regularization_args(parser):
     group.add_argument('--muon-hyperball-scale-mode', type=str, default='align_adamw_rms',
                        choices=['align_adamw_rms', 'spectral_mup', 'shape_scaling'],
                        help='Scale mode for MuonHyperball optimizer')
+    group.add_argument('--muon-hyperball-ns-init', action='store_true', default=False,
+                       help='Apply Newton-Schulz initialization to MuonHyperball parameters: '
+                       'orthogonalize the randomly initialized weights and scale by sqrt(dout/din).')
     # HyperballAdam optimizer arguments (Frobenius norm ball constraint with Adam updates)
     group.add_argument('--hyperball-adam-beta1', type=float, default=0.9,
                        help='Beta1 for HyperballAdam optimizer')

@@ -20,7 +20,7 @@ from .optimizer import (
 from .optimizer_config import OptimizerConfig
 from emerging_optimizers.orthogonalized_optimizers.muon_hyperball import MuonHyperball
 from emerging_optimizers.scalar_optimizers.hyperball_adam import HyperballAdam
-from emerging_optimizers.scalar_optimizers.row_hyperball_adam import RowWiseHyperballAdam
+from emerging_optimizers.scalar_optimizers.row_hyperball_adam import RowWiseHyperballAdam, _normalize_rows_
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,22 @@ def _resolve_row_target_norm(param: torch.nn.Parameter, value: float, mode: str)
     if mode == "times_sqrt_d":
         return float(value) * (param.shape[-1] ** 0.5)
     raise ValueError(f"Unsupported row target norm mode: {mode}")
+
+
+def _install_post_load_renormalize(wrapper, target_row_norm: float):
+    """Wrap load_state_dict so fp32 master params are re-normalized after checkpoint load."""
+    original_load = wrapper.load_state_dict
+
+    def _load_and_renormalize(state_dict):
+        original_load(state_dict)
+        groups = getattr(wrapper, 'fp32_from_float16_groups',
+                         getattr(wrapper, 'fp32_from_fp32_groups', []))
+        for group in groups:
+            for p in group:
+                if p.ndim == 2:
+                    _normalize_rows_(p.data, target_row_norm=target_row_norm)
+
+    wrapper.load_state_dict = _load_and_renormalize
 
 
 def get_megatron_muon_hyperball_optimizer(
@@ -221,6 +237,7 @@ def get_megatron_muon_hyperball_optimizer(
         is_grouped_moe_fn=lambda p: getattr(p, 'is_grouped_moe', False),
         pg_collection=pg_collection,
         tp_mode='duplicated',
+        ns_init=config.muon_hyperball_ns_init,
     )
 
     # Save original optimizer name and switch to adam for the rest
@@ -283,9 +300,6 @@ def get_megatron_muon_hyperball_optimizer(
                     opt.state[p]['exp_avg'] = torch.zeros_like(p.data)
                     opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
                     opt.state[p]['step'] = 0
-                    opt.state[p]['fixed_row_norms'] = torch.norm(
-                        p.data.float(), p=2, dim=-1, keepdim=True
-                    ).to(dtype=p.data.dtype)
 
     def _wrap_special_hyperball_optimizer(params, use_rowwise, target_row_norm=None):
         for param in nonlinear_params:
@@ -339,6 +353,9 @@ def get_megatron_muon_hyperball_optimizer(
             )
         else:
             optimizer = FP32Optimizer(optimizer, config, init_state_fn)
+
+        if use_rowwise and target_row_norm is not None:
+            _install_post_load_renormalize(optimizer, target_row_norm)
 
         optimizers.append(optimizer)
 

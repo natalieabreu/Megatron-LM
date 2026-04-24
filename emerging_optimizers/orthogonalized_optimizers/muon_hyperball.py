@@ -209,6 +209,9 @@ class MuonHyperball(OrthogonalizedOptimizer):
         is_grouped_moe_fn: Function to identify GroupedMLP parameters (weight1/weight2).
         pg_collection: ProcessGroupCollection for tensor parallel support.
         tp_mode: Tensor parallel mode ("duplicated", "blockwise", or "distributed").
+        ns_init: If True, re-initialize parameters by applying the Newton-Schulz iteration
+            (with the same settings used during training) to the randomly initialized weights
+            and scaling by sqrt(dout / din).
     """
 
     def __init__(
@@ -238,6 +241,7 @@ class MuonHyperball(OrthogonalizedOptimizer):
         is_grouped_moe_fn: Optional[Callable[[torch.Tensor], bool]] = None,
         pg_collection: Any | None = None,
         tp_mode: str = "duplicated",
+        ns_init: bool = False,
     ) -> None:
         if msign_steps < 1:
             raise ValueError(f"msign_steps must be at least 1, got {msign_steps}")
@@ -292,6 +296,23 @@ class MuonHyperball(OrthogonalizedOptimizer):
             scaled_orthogonalize_fn=scaled_orthogonalize_fn,
             log_per_module_update_rms=False,
         )
+
+        if ns_init:
+            self._apply_ns_init(msign_steps)
+
+    @torch.no_grad()
+    def _apply_ns_init(self, ns_steps: int) -> None:
+        """Apply Newton-Schulz initialization.
+
+        Orthogonalizes each parameter via the Newton-Schulz iteration (same
+        settings used during training) and then scales by sqrt(dout / din).
+        """
+        for group in self.param_groups:
+            for p in group["params"]:
+                dout, din = p.shape[-2], p.shape[-1]
+                p.data = (
+                    msign(p.data.float(), steps=ns_steps) * (dout / din) ** 0.5
+                ).to(p.dtype)
 
     def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
         """Perform a single optimization step.

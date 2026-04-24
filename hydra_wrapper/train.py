@@ -226,6 +226,8 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
             args.append(f"--muon-extra-scale-factor={optimizer.muon_extra_scale_factor}")
         if optimizer.get("muon_split_moe_experts") is False:
             args.append("--muon-no-split-moe-experts")
+        if optimizer.get("muon_ns_init", False):
+            args.append("--muon-ns-init")
 
     # Scion specific
     if opt_name == "scion":
@@ -262,6 +264,8 @@ def build_megatron_args(cfg: DictConfig) -> List[str]:
             args.append(f"--muon-hyperball-scale-mode={optimizer.muon_hyperball_scale_mode}")
         if optimizer.get("muon_hyperball_qkv_split_mode"):
             args.append(f"--muon-hyperball-qkv-split-mode={optimizer.muon_hyperball_qkv_split_mode}")
+        if optimizer.get("muon_hyperball_ns_init", False):
+            args.append("--muon-hyperball-ns-init")
 
     # HyperballAdam specific
     # muon_hyperball can also route the untied LM head through HyperballAdam.

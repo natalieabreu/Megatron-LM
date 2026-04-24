@@ -69,6 +69,7 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
         extra_scale_factor: float = 1.0,
         pg_collection: Optional[ProcessGroupCollection] = None,
         mode: Literal["blockwise", "duplicated", "distributed"] = "duplicated",
+        ns_init: bool = False,
     ) -> None:
         if num_ns_steps < 1:
             raise ValueError(f"num_ns_steps must be at least 1, got {num_ns_steps}")
@@ -129,6 +130,48 @@ class TensorParallelMuon(OrthogonalizedOptimizer):
             scaled_orthogonalize_fn=scaled_orthogonalize_fn,
             log_per_module_update_rms=False,  # Will be set later via config
         )
+
+        if ns_init:
+            self._apply_ns_init(num_ns_steps, coefficient_type)
+
+    @torch.no_grad()
+    def _apply_ns_init(self, ns_steps: int, coefficient_type: str) -> None:
+        """Apply Newton-Schulz initialization (TP-aware).
+
+        Orthogonalizes each parameter via the Newton-Schulz iteration (same
+        settings used during training) and then scales by sqrt(dout / din),
+        using global dimensions in the TP case.
+        """
+        for group in self.param_groups:
+            for p in group["params"]:
+                if self.pg_collection:
+                    tp_group = (
+                        self.pg_collection.expt_tp
+                        if getattr(p, 'expert_tp', False)
+                        else self.pg_collection.tp
+                    )
+                else:
+                    tp_group = None
+                partition_dim = (
+                    None if self.mode == "blockwise"
+                    else getattr(p, "partition_dim", None)
+                )
+                if partition_dim == -1:
+                    partition_dim = None
+
+                size = [p.size(-2), p.size(-1)]
+                if partition_dim is not None:
+                    size[partition_dim] *= get_pg_size(tp_group)
+
+                orth = newton_schulz_tp(
+                    p.data.float(),
+                    steps=ns_steps,
+                    coefficient_type=coefficient_type,
+                    tp_group=tp_group,
+                    partition_dim=partition_dim,
+                    mode="duplicated" if self.mode == "blockwise" else self.mode,
+                )
+                p.data = (orth * (size[0] / size[1]) ** 0.5).to(p.dtype)
 
     def orthogonalize(self, p: torch.Tensor, grad: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         """Orthogonalize the momentum.
@@ -466,6 +509,7 @@ def get_megatron_muon_optimizer(
         extra_scale_factor=config.muon_extra_scale_factor,
         pg_collection=pg_collection,
         mode=config.muon_tp_mode,
+        ns_init=config.muon_ns_init,
     )
 
     # Enable per-module logging if configured

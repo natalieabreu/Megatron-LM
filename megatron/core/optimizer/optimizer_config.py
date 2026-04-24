@@ -182,6 +182,10 @@ class OptimizerConfig:
     preserving expert independence and avoiding gradient interference across experts.
     """
 
+    muon_ns_init: bool = False
+    """Apply Newton-Schulz initialization to Muon parameters:
+    orthogonalize the randomly initialized weights and scale by sqrt(dout/din)."""
+
     # Scion
     scion_momentum: float = 0.95
     """The momentum used by the internal SGD for Scion."""
@@ -384,6 +388,10 @@ class OptimizerConfig:
 
     muon_hyperball_scale_mode: str = 'align_adamw_rms'
     """Scale factor mode for MuonHyperball updates ('align_adamw_rms', 'shape_scaling', 'spectral_mup')."""
+
+    muon_hyperball_ns_init: bool = False
+    """Apply Newton-Schulz initialization to MuonHyperball parameters:
+    orthogonalize the randomly initialized weights and scale by sqrt(dout/din)."""
 
     #######################
     # Distributed optimizer

@@ -59,6 +59,9 @@ class Muon(OrthogonalizedOptimizer):
         scale_mode: The type of scale factor to use for the update. Defaults to "align_adamw_rms" style scaling.
         extra_scale_factor: The additional scale factor to use for the update.
         use_syrk: Whether to use the Triton kernel for the Newton-Schulz iteration.
+        ns_init: If True, re-initialize parameters by applying the Newton-Schulz iteration
+            (with the same settings used during training) to the randomly initialized weights
+            and scaling by sqrt(dout / din).
     """
 
     def __init__(
@@ -76,6 +79,7 @@ class Muon(OrthogonalizedOptimizer):
         scale_mode: str = "align_adamw_rms",
         extra_scale_factor: float = 1.0,
         use_syrk: bool = False,
+        ns_init: bool = False,
     ) -> None:
         if num_ns_steps < 1:
             raise ValueError(f"num_ns_steps must be at least 1, got {num_ns_steps}")
@@ -114,6 +118,23 @@ class Muon(OrthogonalizedOptimizer):
             fp32_matmul_prec=fp32_matmul_prec,
             scaled_orthogonalize_fn=scaled_orthogonalize_fn,
         )
+
+        if ns_init:
+            self._apply_ns_init(num_ns_steps)
+
+    @torch.no_grad()
+    def _apply_ns_init(self, ns_steps: int) -> None:
+        """Apply Newton-Schulz initialization.
+
+        Orthogonalizes each parameter via the Newton-Schulz iteration (same
+        settings used during training) and then scales by sqrt(dout / din).
+        """
+        for group in self.param_groups:
+            for p in group["params"]:
+                dout, din = p.shape[-2], p.shape[-1]
+                p.data = (
+                    msign(p.data.float(), steps=ns_steps) * (dout / din) ** 0.5
+                ).to(p.dtype)
 
 
 Muon.__doc__ = Muon.__doc__.format(_args_doc=_args_doc)  # type: ignore[union-attr]
